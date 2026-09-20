@@ -1,0 +1,53 @@
+:root {
+  /* Surfaces */
+  --paper: #fafaf9;
+  --surface: #ffffff;
+
+  /* Ink */
+  --ink: #1a1d21;
+  --ink-muted: #5c6470;
+  --ink-faint: #8a919c;
+
+  /* Lines */
+  --line: #e4e7eb;
+
+  /* Accent */
+  --accent: #2b5bd7;
+  --accent-hover: #2147a8;
+  --accent-tint: #edf2fd;
+
+  /* Status */
+  --danger: #c0392b;
+  --warn: #b7791f;
+  --success: #2f7d4f;
+
+  /* Type scale */
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Radii */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(26, 29, 33, 0.06);
+  --shadow-md: 0 4px 16px rgba(26, 29, 33, 0.1);
+
+  /* Fonts */
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Segoe UI Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
