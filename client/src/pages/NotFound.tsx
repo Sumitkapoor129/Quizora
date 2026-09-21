@@ -22,8 +22,8 @@ export default function NotFound() {
               <button
                 type="button"
                 className="btn btn--ghost"
-                onClick={() => {
-                  logout();
+                onClick={async () => {
+                  await logout();
                   navigate('/login', { replace: true });
                 }}
               >

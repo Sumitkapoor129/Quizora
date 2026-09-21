@@ -1,11 +1,12 @@
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import express, { type Express, type NextFunction, type Request, type Response } from 'express';
+import express, { type Express, type Request, type Response } from 'express';
 import helmet from 'helmet';
 import { env } from './config/env.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFound } from './middleware/notFound.js';
 import { originCheck } from './middleware/originCheck.js';
+import { authRouter } from './routes/auth.js';
 
 export type RouteMount = (app: Express) => void;
 
@@ -22,8 +23,7 @@ export function createApp(mountRoutes?: RouteMount): Express {
     res.json({ ok: true, service: 'mcq-exam-server', time: new Date().toISOString() });
   });
 
-  // Placeholder for Phase 2 feature routes (`/api/auth`, `/api/tests`, ...).
-  app.use('/api', (_req: Request, _res: Response, next: NextFunction) => next());
+  app.use('/api/auth', authRouter);
 
   // Test hook: routes mounted here sit before notFound/errorHandler.
   mountRoutes?.(app);

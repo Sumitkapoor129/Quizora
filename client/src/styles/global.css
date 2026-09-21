@@ -254,38 +254,51 @@ body {
   margin-bottom: var(--space-4);
 }
 
-.role-toggle {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  overflow: hidden;
-  background: var(--surface);
-}
-
-.role-toggle__option {
-  display: inline-flex;
+/* ---------- Session banner ---------- */
+.session-banner {
+  position: sticky;
+  top: 0;
+  z-index: 45;
+  display: flex;
   align-items: center;
-  padding: 8px 16px;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-5);
+  background: #f7efe0;
+  border-bottom: 1px solid rgba(183, 121, 31, 0.3);
+  box-shadow: var(--shadow-sm);
+}
+
+.session-banner__text {
+  flex: 1;
+  min-width: 240px;
+}
+
+.session-banner__title {
   font-size: var(--text-sm);
-  font-weight: 600;
+  font-weight: 700;
+  color: var(--warn);
+}
+
+.session-banner__body {
+  font-size: var(--text-sm);
   color: var(--ink-muted);
-  cursor: pointer;
-  border-right: 1px solid var(--line);
 }
 
-.role-toggle__option:hover {
-  color: var(--ink);
+.session-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(250, 250, 249, 0.78);
+  cursor: not-allowed;
 }
 
-.role-toggle__option--active {
-  background: var(--accent-tint);
-  color: var(--accent);
-}
-
-.dev-note {
-  margin-top: var(--space-1);
-  font-size: var(--text-xs);
-  color: var(--ink-faint);
+.route-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40vh;
+  color: var(--ink-muted);
 }
 
 /* ---------- Cards ---------- */
@@ -561,6 +574,13 @@ body {
   flex-direction: column;
 }
 
+.app-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .skip-link {
   position: absolute;
   left: var(--space-4);
@@ -778,13 +798,21 @@ body {
     width: 260px;
     height: auto;
     transform: translateX(-100%);
-    transition: transform 160ms ease;
+    transition:
+      transform 160ms ease,
+      visibility 0s linear 160ms;
     box-shadow: var(--shadow-md);
     z-index: 40;
+    /* Keep offscreen links out of the tab order until the drawer opens. */
+    visibility: hidden;
   }
 
   .sidebar--open {
     transform: translateX(0);
+    visibility: visible;
+    transition:
+      transform 160ms ease,
+      visibility 0s linear 0s;
   }
 
   .sidebar-backdrop {
@@ -818,6 +846,10 @@ body {
   .app-header {
     padding: 0 var(--space-4);
     gap: var(--space-3);
+  }
+
+  .session-banner {
+    padding: var(--space-3) var(--space-4);
   }
 
   .container {

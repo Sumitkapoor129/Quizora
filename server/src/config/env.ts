@@ -3,14 +3,20 @@ import { z } from 'zod';
 
 const isTest = process.env.NODE_ENV === 'test';
 
+// JWT secrets must be >= 32 chars outside test mode (short determinism is fine
+// for the test harness). Presence is still validated manually below.
+const secretSchema = isTest
+  ? z.string().optional()
+  : z.string().min(32).refine((v) => !v.includes('replace-with-a-random'), '[env] JWT secret must not be the example placeholder.').optional();
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3001),
   // Validated for presence manually below (exempt in test mode so vitest can
   // run without a real MongoDB).
   MONGODB_URI: z.string().optional(),
-  JWT_ACCESS_SECRET: z.string().optional(),
-  JWT_REFRESH_SECRET: z.string().optional(),
+  JWT_ACCESS_SECRET: secretSchema,
+  JWT_REFRESH_SECRET: secretSchema,
   CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
   COOKIE_SECURE: z
     .enum(['true', 'false'])

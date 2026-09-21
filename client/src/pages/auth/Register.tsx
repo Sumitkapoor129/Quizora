@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Field } from '@/components/ui/Field';
@@ -32,11 +33,14 @@ function validatePassword(value: string): string | undefined {
 
 function safeNext(raw: string | null): string | null {
   if (!raw) return null;
-  return raw.startsWith('/') && !raw.startsWith('//') ? raw : null;
+  // Same-origin validation: must be a root-relative internal path. Reject
+  // protocol-relative (`//host`) and backslash tricks (`/\host`).
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return null;
+  return raw;
 }
 
 export default function Register() {
-  const { login } = useAuth();
+  const { user, status, expired, register } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const next = safeNext(searchParams.get('next'));
@@ -47,7 +51,13 @@ export default function Register() {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(event: FormEvent) {
+  if (status === 'authenticated' && user && !expired) {
+    // Next-aware so a post-register redirect and a fresh authenticated visit
+    // can never race to different destinations.
+    return <Navigate to={next ?? (user.role === 'admin' ? '/admin' : '/student')} replace />;
+  }
+
+  async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const nextErrors: FieldErrors = {
       name: validateName(name),
@@ -55,13 +65,33 @@ export default function Register() {
       password: validatePassword(password),
     };
     setErrors(nextErrors);
-    if (nextErrors.name || nextErrors.email || nextErrors.password || nextErrors.form) return;
+    if (nextErrors.name) {
+      document.getElementById('name')?.focus();
+      return;
+    }
+    if (nextErrors.email) {
+      document.getElementById('email')?.focus();
+      return;
+    }
+    if (nextErrors.password) {
+      document.getElementById('password')?.focus();
+      return;
+    }
 
     setSubmitting(true);
-    window.setTimeout(() => {
-      login('student');
-      navigate(next ?? '/student');
-    }, 400);
+    try {
+      const authed = await register({ name: name.trim(), email: email.trim(), password });
+      navigate(next ?? (authed.role === 'admin' ? '/admin' : '/student'), { replace: true });
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'EMAIL_TAKEN') {
+        setErrors({ email: 'An account with this email already exists.' });
+        document.getElementById('email')?.focus();
+      } else {
+        setErrors({ form: 'Something went wrong. Please try again.' });
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -89,7 +119,7 @@ export default function Register() {
               error={errors.name}
               onChange={(e) => {
                 setName(e.target.value);
-                setErrors((prev) => ({ ...prev, name: undefined }));
+                setErrors((prev) => ({ ...prev, name: undefined, form: undefined }));
               }}
               onBlur={() => setErrors((prev) => ({ ...prev, name: validateName(name) }))}
             />
@@ -105,7 +135,7 @@ export default function Register() {
               error={errors.email}
               onChange={(e) => {
                 setEmail(e.target.value);
-                setErrors((prev) => ({ ...prev, email: undefined }));
+                setErrors((prev) => ({ ...prev, email: undefined, form: undefined }));
               }}
               onBlur={() => setErrors((prev) => ({ ...prev, email: validateEmail(email) }))}
             />
@@ -121,7 +151,7 @@ export default function Register() {
               error={errors.password}
               onChange={(e) => {
                 setPassword(e.target.value);
-                setErrors((prev) => ({ ...prev, password: undefined }));
+                setErrors((prev) => ({ ...prev, password: undefined, form: undefined }));
               }}
               onBlur={() => setErrors((prev) => ({ ...prev, password: validatePassword(password) }))}
             />

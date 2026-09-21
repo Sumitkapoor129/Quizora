@@ -1,10 +1,10 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { ApiError } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Field } from '@/components/ui/Field';
 import { useAuth } from '@/hooks/useAuth';
-import type { Role } from '@/types';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -27,35 +27,60 @@ function validatePassword(value: string): string | undefined {
 
 function safeNext(raw: string | null): string | null {
   if (!raw) return null;
-  return raw.startsWith('/') && !raw.startsWith('//') ? raw : null;
+  // Same-origin validation: must be a root-relative internal path. Reject
+  // protocol-relative (`//host`) and backslash tricks (`/\host`).
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return null;
+  return raw;
 }
 
 export default function Login() {
-  const { login } = useAuth();
+  const { user, status, expired, login } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const next = safeNext(searchParams.get('next'));
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<Role>('student');
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(event: FormEvent) {
+  if (status === 'authenticated' && user && !expired) {
+    // Next-aware so a post-login redirect and a fresh authenticated visit
+    // can never race to different destinations.
+    return <Navigate to={next ?? (user.role === 'admin' ? '/admin' : '/student')} replace />;
+  }
+
+  async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const nextErrors: FieldErrors = {
       email: validateEmail(email),
       password: validatePassword(password),
     };
     setErrors(nextErrors);
-    if (nextErrors.email || nextErrors.password) return;
+    if (nextErrors.email) {
+      document.getElementById('email')?.focus();
+      return;
+    }
+    if (nextErrors.password) {
+      document.getElementById('password')?.focus();
+      return;
+    }
 
     setSubmitting(true);
-    window.setTimeout(() => {
-      login(role);
-      navigate(next ?? (role === 'admin' ? '/admin' : '/student'));
-    }, 400);
+    try {
+      const authed = await login({ email: email.trim(), password });
+      navigate(next ?? (authed.role === 'admin' ? '/admin' : '/student'), { replace: true });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setErrors({ form: 'Invalid email or password.' });
+        setPassword('');
+        document.getElementById('password')?.focus();
+      } else {
+        setErrors({ form: 'Something went wrong. Please try again.' });
+      }
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -84,7 +109,7 @@ export default function Login() {
               error={errors.email}
               onChange={(e) => {
                 setEmail(e.target.value);
-                setErrors((prev) => ({ ...prev, email: undefined }));
+                setErrors((prev) => ({ ...prev, email: undefined, form: undefined }));
               }}
               onBlur={() => setErrors((prev) => ({ ...prev, email: validateEmail(email) }))}
             />
@@ -99,7 +124,7 @@ export default function Login() {
               error={errors.password}
               onChange={(e) => {
                 setPassword(e.target.value);
-                setErrors((prev) => ({ ...prev, password: undefined }));
+                setErrors((prev) => ({ ...prev, password: undefined, form: undefined }));
               }}
               onBlur={() => setErrors((prev) => ({ ...prev, password: validatePassword(password) }))}
             />
@@ -109,31 +134,6 @@ export default function Login() {
                 {errors.form}
               </p>
             )}
-
-            <div className="field">
-              <span className="field__label" id="demo-role-label">
-                Demo role
-              </span>
-              <div className="role-toggle" role="radiogroup" aria-labelledby="demo-role-label">
-                {(['student', 'admin'] as const).map((option) => (
-                  <label
-                    key={option}
-                    className={`role-toggle__option${role === option ? ' role-toggle__option--active' : ''}`}
-                  >
-                    <input
-                      type="radio"
-                      name="demo-role"
-                      className="sr-only"
-                      checked={role === option}
-                      disabled={submitting}
-                      onChange={() => setRole(option)}
-                    />
-                    {option === 'student' ? 'Student' : 'Admin'}
-                  </label>
-                ))}
-              </div>
-              <p className="dev-note">Demo mode — sign-in is simulated until the backend is connected.</p>
-            </div>
 
             <Button type="submit" className="btn--block" loading={submitting}>
               {submitting ? 'Signing in…' : 'Sign in'}

@@ -75,6 +75,11 @@ No Critical findings. Resolved before commit: see hardening bullets above. Defer
 ### DONE — `docs/ux/phase1-auth-and-shell.md` ✅
 Full approved UX spec: auth copy/validation table, session-expiry banner pattern, app shell IA, student/admin dashboard empty states, A11y checklist, later-phase rules (exam = shell-free full-screen route, role-separated route trees, confirm-before-destroy, session-banner app-wide, server-authoritative timers).
 
+### DONE + VERIFIED — Phase 2 (Auth + RBAC) ✅ (session 2026-09-21)
+Server: `src/routes/auth.ts` (register 201 / login / refresh / logout 204 / me), argon2id, HS256 access JWT (15min httpOnly cookie) + opaque 48-byte refresh token (7d, sha256-stored, atomic rotation CAS, replay detection — `REPLAY_REVOKE_GRACE_MS=10s` via new `rotatedAt` so two-tab refresh races don't revoke a legit session), per-route express-rate-limit, zod validation with exact spec copy + flat details, login timing-equalizer (dummy argon2 verify, no user enumeration), `RefreshSession.expiresAt` TTL index, env JWT secrets min(32) + refuse the example placeholder. Tests `tests/auth.test.ts` 13 → suite 18/18; `npm run build` clean.
+Client: real AuthContext (single-flight refresh; `/me` refresh-recovery), session-expiry banner + `inert` veil (`SessionExpiryBanner.tsx` in AppLayout), hardened `safeNext`, next-aware post-login/register redirects, `AccessDenied` route (UX spec §5 role-mismatch), admin-drawer a11y (Escape/trap/focus-return, closed-sidebar not focusable), demo role selector + `DEMO_TESTS` removed. Tests 12/12 (added SessionExpiryBanner + AccessDenied/routes); build + typecheck clean.
+Notes: **client `api/client.ts` is source-of-truth for the auth wire contract** (match it server-side). Deferred (logged): logout-failure retry/error surface; `JWT_REFRESH_SECRET` now dead config (opaque tokens) but kept to avoid churn; `trust proxy` note for Phase 9 deploy docs.
+
 ## 6. ✅ RESOLVED — token/brand reconciliation (decided via approved default)
 
 Decision: **keep the approved tokens + adopt "ExamPro" as brand.** Was already in
@@ -85,8 +90,8 @@ implemented values. No code change was required.
 ## 7. Remaining phases (order matters)
 
 1. **Close Phase 1 — DONE ✅** (session 2026-09-20): client verified, tokens/brand reconciled, review + hardening fixes applied, final verify green (server 5/5, client 7/7, both tsc builds clean), initial commit landed on `main`.
-2. **Phase 2 — Auth + RBAC:** server register/login/refresh/logout/me (argon2id, JWT access 15min httpOnly cookie + opaque rotating refresh stored hashed in `RefreshSession` with previousTokenHash+revokedAt, rate-limit auth routes, origin check already in place); client wires real AuthContext (remove demo role toggle), session-expiry non-blocking banner (per UX spec). Feature branch per AGENTS.md.
-3. **Phase 3 — Test creation:** admin CRUD tests/sections/questions/options, ordering, publish/unpublish, image upload (no-SVG allowlist, magic-number, ≤2MB, server-generated filename, `nosniff`), freeze check (409 after first start).
+2. **Phase 2 — Auth + RBAC — DONE ✅** (session 2026-09-21): full auth API + real client wiring. Details in §5 (Phase 2 block).
+3. **Phase 3 — Test creation (IN PROGRESS, branch `feature/test-creation`):** admin CRUD tests/sections/questions/options, ordering, publish/unpublish, image upload (no-SVG allowlist, magic-number, ≤2MB, server-generated filename, `nosniff`), freeze check (409 after first start).
 4. **Phase 4 — JSON import:** validate → preview+hash → confirm (re-validate+re-hash inside one `insertOne`, all-or-nothing, import as DRAFT).
 5. **Phase 5 — Exam engine:** instructions → fullscreen gate → start (CAS) → server timers/countdown → palette → debounced autosave → refresh/network recovery → idempotent submit → scoring (server-side, negative marks, floor 0).
 6. **Phase 6 — Anti-cheat:** fullscreen 3-warning (blocking modals), copy/paste/cut/context-menu suppression, visibility/focus events, event log, 3rd-strike auto-submit.
@@ -100,7 +105,7 @@ implemented values. No code change was required.
 cd server && npm test        # no DB needed (memory-server)
 cd server && npm run dev     # REQUIRES MONGODB_URI in server/.env (user provides later)
 cd client && npm run dev     # standalone, mockless UI (port 5173)
-cd client && npm run build   # UNVERIFIED until Phase-1 close-out
+cd client && npm run build   # verified green (Phase 2 close-out)
 ```
 
 ## 9. Environment / env vars (server/.env)

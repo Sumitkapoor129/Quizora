@@ -1,4 +1,4 @@
-import type { ApiErrorBody } from '@/types';
+import type { ApiErrorBody, AuthUser, Role, SessionResponse } from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
@@ -16,13 +16,57 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * Fetch wrapper used by every API call.
- * Expects the backend (Phase 2) to return errors shaped as
- * `{ error: { code, message, details? } }` with 401 `UNAUTHENTICATED`
- * and 403 `FORBIDDEN` for auth/session failures.
+type SessionBody = {
+  user: { id: string; email: string; name: string; role: string };
+  sessionExpiresAt: string;
+};
+
+function mapRole(role: string): Role {
+  return role.toUpperCase() === 'ADMIN' ? 'admin' : 'student';
+}
+
+function mapUser(user: SessionBody['user']): AuthUser {
+  return { id: user.id, email: user.email, name: user.name, role: mapRole(user.role) };
+}
+
+function mapSession(body: SessionBody): SessionResponse {
+  return { user: mapUser(body.user), sessionExpiresAt: body.sessionExpiresAt };
+}
+
+/*
+ * Session-expiry handling for non-auth endpoints. On a 401 we attempt a
+ * single-flight refresh once; the original request is replayed if it
+ * succeeds. Only when refresh fails does the session count as expired.
+ * Tokens are httpOnly cookies — the client never reads or stores them.
  */
-export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+let expiredHandler: (() => void) | null = null;
+
+export function onSessionExpired(handler: () => void): void {
+  expiredHandler = handler;
+}
+
+function notifySessionExpired(): void {
+  expiredHandler?.();
+}
+
+let refreshPromise: Promise<boolean> | null = null;
+
+function refreshSession(): Promise<boolean> {
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${BASE_URL}/api/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+    })
+      .then((res) => res.ok)
+      .catch(() => false)
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
+
+async function request<T>(path: string, init: RequestInit = {}, allowRefresh = true): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
@@ -37,6 +81,14 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
         message: 'Unable to reach the server. Please try again.',
       },
     });
+  }
+
+  if (res.status === 401 && allowRefresh) {
+    const refreshed = await refreshSession();
+    if (refreshed) {
+      return request<T>(path, init, false);
+    }
+    notifySessionExpired();
   }
 
   if (!res.ok) {
@@ -54,5 +106,18 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     );
   }
 
-  return (await res.json()) as T;
+  const text = await res.text();
+  return (text ? (JSON.parse(text) as T) : undefined) as T;
 }
+
+export const api = {
+  auth: {
+    login: (input: { email: string; password: string }) =>
+      request<SessionResponse>('/api/auth/login', { method: 'POST', body: JSON.stringify(input) }, false).then(mapSession),
+    register: (input: { name: string; email: string; password: string }) =>
+      request<SessionResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) }, false).then(mapSession),
+    logout: () => request<void>('/api/auth/logout', { method: 'POST' }, false),
+    refresh: () => request<SessionResponse>('/api/auth/refresh', { method: 'POST' }, false).then(mapSession),
+    me: () => request<SessionResponse>('/api/auth/me', {}).then(mapSession),
+  },
+};

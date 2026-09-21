@@ -1,6 +1,8 @@
 import { createBrowserRouter, Navigate, useLocation, type RouteObject } from 'react-router-dom';
 import AppLayout from '@/components/layout/AppLayout';
+import { Spinner } from '@/components/ui/Spinner';
 import { useAuth } from '@/hooks/useAuth';
+import AccessDenied from '@/pages/AccessDenied';
 import AdminDashboard from '@/pages/admin/Dashboard';
 import Login from '@/pages/auth/Login';
 import Register from '@/pages/auth/Register';
@@ -16,15 +18,23 @@ function HomeRedirect() {
 }
 
 function ProtectedRoute({ role }: { role: Role }) {
-  const { user } = useAuth();
+  const { user, status } = useAuth();
   const location = useLocation();
+
+  if (status === 'checking') {
+    return (
+      <div className="route-loading" role="status" aria-label="Checking your session">
+        <Spinner label="Checking your session" />
+      </div>
+    );
+  }
 
   if (!user) {
     const next = encodeURIComponent(location.pathname + location.search);
     return <Navigate to={`/login?next=${next}`} replace />;
   }
   if (user.role !== role) {
-    return <Navigate to="/" replace />;
+    return <AccessDenied />;
   }
   return <AppLayout />;
 }

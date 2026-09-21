@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 
 const SUMMARY = [
-  { label: 'Active tests', value: '0', hint: 'tests published across all time' },
+  { label: 'Published tests', value: '0', hint: 'tests published across all time' },
   { label: 'Attempts today', value: '0', hint: 'submissions in the last 24 hours' },
   { label: 'Average score', value: '—', hint: 'mean across all attempts' },
 ];
