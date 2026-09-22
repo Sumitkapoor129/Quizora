@@ -5,6 +5,8 @@ import { Spinner } from '@/components/ui/Spinner';
 import { useAuth } from '@/hooks/useAuth';
 import AccessDenied from '@/pages/AccessDenied';
 import AdminDashboard from '@/pages/admin/Dashboard';
+import AttemptDetail from '@/pages/admin/attempts/AttemptDetail';
+import AttemptsList from '@/pages/admin/attempts/AttemptsList';
 import TestBuilder from '@/pages/admin/tests/Builder';
 import TestsList from '@/pages/admin/tests/List';
 import Login from '@/pages/auth/Login';
@@ -122,7 +124,11 @@ export const routes: RouteObject[] = [
       { path: 'tests/:id/edit', element: <TestBuilder /> },
       {
         path: 'attempts',
-        element: <Placeholder title="Attempts" description="Review student submissions in detail." />,
+        element: <AttemptsList />,
+      },
+      {
+        path: 'attempts/:attemptId',
+        element: <AttemptDetail />,
       },
       {
         path: 'analytics',

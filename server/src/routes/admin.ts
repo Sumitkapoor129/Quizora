@@ -9,6 +9,7 @@ import { AppError } from '../errors.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { Test, type TestDoc } from '../models/Test.js';
 import { TestAttempt } from '../models/TestAttempt.js';
+import { User } from '../models/User.js';
 
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 const uploadDir = resolve(env.UPLOAD_DIR);
@@ -262,6 +263,145 @@ function toSummary(test: any): object {
   };
 }
 
+// ---- Attempt review (Phase 7): admin-only serialization of the sealed blueprint ----
+
+/**
+ * Live-content map keyed by _id (text/images/explanation — never correctness).
+ * Missing test → null, so a deleted/edited test degrades to omitted fields.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildContent(test: any) {
+  if (!test) return null;
+  const questionById = new Map<string, { type?: string; text?: string; imageUrl?: string; explanation?: string }>();
+  const optionById = new Map<string, { text?: string; imageUrl?: string }>();
+  for (const section of test.sections ?? []) {
+    for (const q of section.questions ?? []) {
+      questionById.set(String(q._id), {
+        type: q.type,
+        text: q.text ?? undefined,
+        imageUrl: q.imageUrl ?? undefined,
+        explanation: q.explanation ?? undefined
+      });
+      for (const o of q.options ?? []) {
+        optionById.set(String(o._id), { text: o.text ?? undefined, imageUrl: o.imageUrl ?? undefined });
+      }
+    }
+  }
+  return { title: test.title, questionById, optionById };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serializeEvents(attempt: any): any[] {
+  return (attempt.events ?? []).map((e: any) => ({
+    type: e.type,
+    ...(e.payload !== undefined ? { payload: e.payload } : {}),
+    createdAt: new Date(e.createdAt).toISOString()
+  }));
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serializeAttemptSummary(attempt: any, test: any, student: any): object {
+  return {
+    id: String(attempt._id),
+    testId: String(attempt.testId),
+    testTitle: test?.title ?? '',
+    student: {
+      id: String(student?._id ?? attempt.studentId),
+      name: student?.name ?? '',
+      email: student?.email ?? ''
+    },
+    status: attempt.status,
+    score: attempt.score ?? 0,
+    maxScore: attempt.maxScore ?? 0,
+    correctCount: attempt.correctCount ?? 0,
+    totalQuestions: attempt.totalQuestions ?? 0,
+    warningCount: attempt.warningCount ?? 0,
+    startedAt: attempt.startedAt ? new Date(attempt.startedAt).toISOString() : null,
+    submittedAt: attempt.submittedAt ? new Date(attempt.submittedAt).toISOString() : null
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serializeAttemptDetail(attempt: any, content: ReturnType<typeof buildContent>, student: any): object {
+  const scored = attempt.status === 'SUBMITTED' || attempt.status === 'TIMED_OUT';
+  const answerByQuestion = new Map<string, any>(
+    (attempt.answers ?? []).map((a: any) => [String(a.questionId), a] as [string, any])
+  );
+  const correctByQuestion = new Map<string, Set<string>>(
+    (attempt.blueprint ?? []).map((bp: any) => [String(bp.questionId), new Set<string>((bp.correctOptionIds ?? []).map(String))])
+  );
+  const selectedByQuestion = new Map<string, Set<string>>(
+    (attempt.answers ?? []).map((a: any) => [String(a.questionId), new Set<string>((a.selectedOptionIds ?? []).map(String))])
+  );
+  const sectionIndexBySectionId = new Map<string, number>();
+  for (const bp of attempt.blueprint ?? []) {
+    if (!sectionIndexBySectionId.has(String(bp.sectionId))) sectionIndexBySectionId.set(String(bp.sectionId), bp.sectionIndex);
+  }
+
+  return {
+    id: String(attempt._id),
+    testId: String(attempt.testId),
+    testTitle: content?.title ?? '',
+    student: {
+      id: String(student?._id ?? attempt.studentId),
+      name: student?.name ?? '',
+      email: student?.email ?? ''
+    },
+    status: attempt.status,
+    startedAt: attempt.startedAt ? new Date(attempt.startedAt).toISOString() : null,
+    endAt: attempt.endAt ? new Date(attempt.endAt).toISOString() : null,
+    submittedAt: attempt.submittedAt ? new Date(attempt.submittedAt).toISOString() : null,
+    score: attempt.score ?? 0,
+    maxScore: attempt.maxScore ?? 0,
+    correctCount: attempt.correctCount ?? 0,
+    totalQuestions: attempt.totalQuestions ?? 0,
+    warningCount: attempt.warningCount ?? 0,
+    sections: (attempt.sectionAttempts ?? []).map((sa: any) => ({
+      sectionId: String(sa.sectionId),
+      sectionIndex: sectionIndexBySectionId.get(String(sa.sectionId)) ?? 0,
+      title: sa.title ?? '',
+      score: sa.score ?? 0,
+      maxScore: sa.maxScore ?? 0,
+      correctCount: sa.correctCount ?? 0
+    })),
+    questions: (attempt.blueprint ?? []).map((bp: any, i: number) => {
+      const q = content?.questionById.get(String(bp.questionId));
+      const answer = answerByQuestion.get(String(bp.questionId));
+      const correct = correctByQuestion.get(String(bp.questionId)) ?? new Set<string>();
+      const selected = selectedByQuestion.get(String(bp.questionId)) ?? new Set<string>();
+      return {
+        questionId: String(bp.questionId),
+        questionIndex: i,
+        sectionIndex: bp.sectionIndex,
+        type: bp.type,
+        ...(q?.text !== undefined ? { text: q.text } : {}),
+        ...(q?.imageUrl !== undefined ? { imageUrl: q.imageUrl } : {}),
+        ...(q?.explanation !== undefined ? { explanation: q.explanation } : {}),
+        marks: bp.marks,
+        negativeMarks: bp.negativeMarks,
+        options: (bp.optionIds ?? []).map((oid: any) => {
+          const o = content?.optionById.get(String(oid));
+          return {
+            optionId: String(oid),
+            ...(o?.text !== undefined ? { text: o.text } : {}),
+            ...(o?.imageUrl !== undefined ? { imageUrl: o.imageUrl } : {}),
+            isCorrect: correct.has(String(oid)),
+            selected: selected.has(String(oid))
+          };
+        }),
+        selectedOptionIds: answer ? answer.selectedOptionIds.map(String) : [],
+        // isAttempted reflects the live answer regardless of status (an admin
+        // watching a live attempt still sees what the student has selected);
+        // only correctness/marks need a completed score.
+        isAttempted: Boolean(answer && answer.selectedOptionIds.length > 0),
+        isCorrect: scored ? (answer?.isCorrect ?? false) : false,
+        marksAwarded: scored ? (answer?.marksAwarded ?? 0) : 0
+      };
+    }),
+    events: serializeEvents(attempt)
+  };
+}
+
 // ---- Helpers ----
 
 type AsyncHandler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
@@ -486,5 +626,42 @@ adminRouter.post(
       sections: testData.sections as unknown as TestDoc['sections']
     });
     res.status(201).json(serializeTest(test));
+  })
+);
+
+adminRouter.get(
+  '/attempts',
+  asyncHandler(async (req, res) => {
+    const { testId } = z.object({ testId: z.string().trim().optional() }).parse(req.query);
+    const filter = testId ? { testId } : {};
+    // _id embeds the creation timestamp — newest first without a schema change.
+    // Hard cap keeps the global (all-students) list bounded as volume grows.
+    // ponytail: no cursor pagination yet — add ?page=/cursor when the list can
+    // realistically exceed a few hundred attempts.
+    const attempts = await TestAttempt.find(filter).sort({ _id: -1 }).limit(200);
+    const testIds = [...new Set(attempts.map((a) => String(a.testId)))];
+    const studentIds = [...new Set(attempts.map((a) => String(a.studentId)))];
+    const [tests, users] = await Promise.all([
+      Test.find({ _id: { $in: testIds } }),
+      User.find({ _id: { $in: studentIds } })
+    ]);
+    const testBy = new Map(tests.map((t) => [String(t._id), t]));
+    const userBy = new Map(users.map((u) => [String(u._id), u]));
+    res.json({
+      attempts: attempts.map((a) => serializeAttemptSummary(a, testBy.get(String(a.testId)), userBy.get(String(a.studentId))))
+    });
+  })
+);
+
+adminRouter.get(
+  '/attempts/:attemptId',
+  asyncHandler(async (req, res) => {
+    const attempt = await TestAttempt.findById(req.params.attemptId);
+    if (!attempt) throw new AppError(404, 'NOT_FOUND', 'Attempt not found.');
+    const [test, student] = await Promise.all([
+      Test.findById(attempt.testId),
+      User.findById(attempt.studentId)
+    ]);
+    res.json({ attempt: serializeAttemptDetail(attempt, buildContent(test), student) });
   })
 );

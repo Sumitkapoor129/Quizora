@@ -1,4 +1,6 @@
 import type {
+  AdminAttemptDetailResponse,
+  AdminAttemptListResponse,
   AdminTest,
   AdminTestWrite,
   AntiCheatEventType,
@@ -171,6 +173,15 @@ export const api = {
       request<ValidateImportResponse>('/api/admin/import/validate', { method: 'POST', body: JSON.stringify(input) }),
     confirm: (input: { content: string; hash: string }) =>
       request<AdminTest>('/api/admin/import/confirm', { method: 'POST', body: JSON.stringify(input) }),
+  },
+  admin: {
+    attempts: {
+      list: (testId?: string) => {
+        const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
+        return request<AdminAttemptListResponse>(`/api/admin/attempts${query}`);
+      },
+      get: (attemptId: string) => request<AdminAttemptDetailResponse>(`/api/admin/attempts/${attemptId}`),
+    },
   },
   student: {
     tests: () => request<StudentTestsResponse>('/api/student/tests'),
