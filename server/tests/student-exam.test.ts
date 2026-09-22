@@ -593,7 +593,7 @@ describe('POST /api/student/attempts/:attemptId/events', () => {
       .send({ type: 'FULLSCREEN_EXIT', payload: { reason: 'user' } });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: 'IN_PROGRESS', warningCount: 0, submitted: false });
+    expect(res.body).toEqual({ status: 'IN_PROGRESS', warningCount: 1, submitted: false });
 
     const attempt = await getAttempt(attemptId);
     const event = attempt.events.find((e: any) => e.type === 'FULLSCREEN_EXIT');
@@ -627,6 +627,72 @@ describe('POST /api/student/attempts/:attemptId/events', () => {
       .send({ type: 'BOGUS' });
     expect(bad.status).toBe(400);
     expect(bad.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('automatically submits the attempt on the 3rd violation', async () => {
+    const testId = await publishTest('Events Auto Submit', [
+      {
+        title: 'S',
+        order: 0,
+        durationSec: 600,
+        questions: [singleQ(0, 'q?', 1, [opt(0, 'a', true), opt(1, 'b')])]
+      }
+    ]);
+    const attemptId = await createAttempt(testId);
+    await startAttempt(attemptId);
+
+    for (let i = 1; i <= 3; i++) {
+      const res = await request(app)
+        .post(`/api/student/attempts/${attemptId}/events`)
+        .set('Cookie', studentCookie)
+        .send({ type: i === 1 ? 'COPY' : i === 2 ? 'PASTE' : 'CONTEXT_MENU' });
+      expect(res.status).toBe(200);
+      expect(res.body.warningCount).toBe(i);
+      if (i < 3) {
+        expect(res.body).toEqual({ status: 'IN_PROGRESS', warningCount: i, submitted: false });
+      } else {
+        expect(res.body).toEqual({ status: 'SUBMITTED', warningCount: 3, submitted: true });
+      }
+    }
+
+    const final = await getAttempt(attemptId);
+    expect(final.status).toBe('SUBMITTED');
+    expect(final.submittedAt).toBeDefined();
+    expect(final.events.some((e: any) => e.type === 'SUBMIT')).toBe(true);
+
+    const result = await request(app)
+      .get(`/api/student/attempts/${attemptId}/result`)
+      .set('Cookie', studentCookie);
+    expect(result.status).toBe(200);
+    expect(result.body.attempt.status).toBe('SUBMITTED');
+
+    const fourth = await request(app)
+      .post(`/api/student/attempts/${attemptId}/events`)
+      .set('Cookie', studentCookie)
+      .send({ type: 'COPY' });
+    expect(fourth.status).toBe(409);
+    expect(fourth.body.error.code).toBe('NOT_IN_PROGRESS');
+  });
+
+  it('does not count informational events toward warnings', async () => {
+    const testId = await publishTest('Events Info', [
+      {
+        title: 'S',
+        order: 0,
+        durationSec: 600,
+        questions: [singleQ(0, 'q?', 1, [opt(0, 'a', true), opt(1, 'b')])]
+      }
+    ]);
+    const attemptId = await createAttempt(testId);
+    await startAttempt(attemptId);
+
+    const res = await request(app)
+      .post(`/api/student/attempts/${attemptId}/events`)
+      .set('Cookie', studentCookie)
+      .send({ type: 'NETWORK_RECONNECT' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'IN_PROGRESS', warningCount: 0, submitted: false });
   });
 });
 

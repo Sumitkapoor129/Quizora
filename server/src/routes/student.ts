@@ -36,6 +36,18 @@ const postEventSchema = z.object({
   payload: z.unknown().optional()
 });
 
+/** Event types that count toward the 3-strike auto-submit. NETWORK_RECONNECT is informational. */
+const VIOLATION_EVENT_TYPES = new Set<string>([
+  'FULLSCREEN_EXIT',
+  'COPY',
+  'PASTE',
+  'CUT',
+  'CONTEXT_MENU',
+  'VISIBILITY_HIDDEN',
+  'FOCUS_LOST'
+]);
+const MAX_WARNINGS = 3;
+
 // ---- Seeded shuffle (deterministic per attempt, stable across resume) ----
 
 function mulberry32(seed: number): () => number {
@@ -286,6 +298,18 @@ function scoreAttempt(attempt: any, submittedAt: Date): void {
     sa.correctCount = agg.correctCount;
     sa.submittedAt = submittedAt;
   }
+}
+
+/**
+ * Scores and marks an IN_PROGRESS attempt as submitted, appending the SUBMIT
+ * event. Shared by the manual submit route and anti-cheat auto-submit.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function finalizeSubmit(attempt: any, submittedAt: Date): void {
+  attempt.submittedAt = submittedAt;
+  attempt.status = 'SUBMITTED';
+  scoreAttempt(attempt, submittedAt);
+  attempt.events = [...(attempt.events ?? []), { type: 'SUBMIT', createdAt: submittedAt }] as unknown as TestAttemptDoc['events'];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -560,13 +584,37 @@ studentRouter.post(
     }
 
     const body = postEventSchema.parse(req.body);
-    attempt.events = [
-      ...(attempt.events ?? []),
-      { type: body.type, ...(body.payload !== undefined ? { payload: body.payload } : {}), createdAt: new Date() }
-    ] as unknown as TestAttemptDoc['events'];
 
-    await attempt.save();
-    res.json({ status: attempt.status, warningCount: attempt.warningCount, submitted: false });
+    // Retry on mongoose VersionError (a concurrent event/save from another tab
+    // bumped __v between read and save): reload the fresh doc and re-apply the
+    // mutation so a violation is never silently lost. 3 attempts (2 retries).
+    let submitted = false;
+    for (let attemptNo = 0; attemptNo < 3; attemptNo += 1) {
+      attempt.events = [
+        ...(attempt.events ?? []),
+        { type: body.type, ...(body.payload !== undefined ? { payload: body.payload } : {}), createdAt: new Date() }
+      ] as unknown as TestAttemptDoc['events'];
+
+      if (VIOLATION_EVENT_TYPES.has(body.type)) {
+        attempt.warningCount = (attempt.warningCount ?? 0) + 1;
+      }
+
+      submitted = (attempt.warningCount ?? 0) >= MAX_WARNINGS;
+      if (submitted) finalizeSubmit(attempt, new Date());
+
+      try {
+        await attempt.save();
+        break;
+      } catch (err) {
+        if (!(err instanceof mongoose.Error.VersionError) || attemptNo === 2) throw err;
+        await attempt.reload();
+        if (attempt.status !== 'IN_PROGRESS') {
+          throw new AppError(409, 'NOT_IN_PROGRESS', 'This attempt is not in progress.');
+        }
+      }
+    }
+
+    res.json({ status: attempt.status, warningCount: attempt.warningCount, submitted });
   })
 );
 
@@ -587,11 +635,7 @@ studentRouter.post(
     }
 
     const submittedAt = new Date();
-    attempt.submittedAt = submittedAt;
-    attempt.status = 'SUBMITTED';
-    scoreAttempt(attempt, submittedAt);
-    attempt.events = [...(attempt.events ?? []), { type: 'SUBMIT', createdAt: submittedAt }] as unknown as TestAttemptDoc['events'];
-
+    finalizeSubmit(attempt, submittedAt);
     await attempt.save();
     res.json({ attempt: buildResult(attempt, content) });
   })

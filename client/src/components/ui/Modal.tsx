@@ -16,6 +16,11 @@ export interface ModalProps {
 export function Modal({ open, onClose, title, children, footer, id = 'modal-title' }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  // Stable ref so the focus-trap effect only depends on `open`. Callers pass
+  // inline arrows; re-running the effect every render would yank focus back to
+  // the close button on every parent re-render (e.g. a ticking countdown).
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -26,7 +31,7 @@ export function Modal({ open, onClose, title, children, footer, id = 'modal-titl
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -54,7 +59,7 @@ export function Modal({ open, onClose, title, children, footer, id = 'modal-titl
       document.removeEventListener('keydown', handleKeyDown);
       previouslyFocused?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

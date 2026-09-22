@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +7,7 @@ import { ApiError, api } from '@/api/client';
 import ExamRunner from '@/pages/student/ExamRunner';
 import type {
   AttemptResultResponse,
+  PostEventResponse,
   SaveAnswersBody,
   SaveAnswersResponse,
   StudentAttempt,
@@ -137,7 +138,16 @@ describe('ExamRunner', () => {
     vi.clearAllMocks();
     vi.mocked(api.student.saveAnswers).mockResolvedValue(saveOk());
     vi.mocked(api.student.submit).mockResolvedValue(undefined as unknown as AttemptResultResponse);
+    vi.mocked(api.student.postEvent).mockResolvedValue({ status: 'IN_PROGRESS', warningCount: 0, submitted: false });
   });
+
+  function postEventResult(warningCount: number, submitted = false): PostEventResponse {
+    return {
+      status: submitted ? 'SUBMITTED' : 'IN_PROGRESS',
+      warningCount,
+      submitted,
+    };
+  }
 
   it('renders the current question and stores SINGLE/MULTI selections', async () => {
     const user = userEvent.setup();
@@ -321,6 +331,113 @@ describe('ExamRunner', () => {
 
   it('redirects a SUBMITTED attempt to the result screen', async () => {
     renderExam(buildAttempt({ status: 'SUBMITTED' }));
+    expect(await screen.findByText('RESULT PAGE')).toBeInTheDocument();
+  });
+
+  it('suppresses copy, logs the violation, and shows an inline notice (no blocking modal)', async () => {
+    vi.mocked(api.student.postEvent).mockResolvedValue(postEventResult(1));
+    renderExam();
+    await screen.findByText('What is 2+2?');
+
+    let prevented = false;
+    await act(async () => {
+      prevented = document.dispatchEvent(new Event('copy', { cancelable: true })) === false;
+    });
+    expect(prevented).toBe(true);
+
+    await waitFor(() => expect(api.student.postEvent).toHaveBeenCalledWith('a1', { type: 'COPY' }));
+    expect(await screen.findByText(/Warning 1 of 3: Copying is not allowed during the exam/)).toBeInTheDocument();
+    expect(screen.getByText('1/3 warnings')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Warning 1 of 3' })).not.toBeInTheDocument();
+  });
+
+  it('coalesces a tab/window switch (blur + hidden) into a single blocking violation', async () => {
+    vi.mocked(api.student.postEvent).mockResolvedValue(postEventResult(1));
+    renderExam();
+    await screen.findByText('What is 2+2?');
+
+    await act(async () => {
+      window.dispatchEvent(new Event('blur'));
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      Reflect.deleteProperty(document, 'hidden');
+    });
+
+    await waitFor(() => expect(api.student.postEvent).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole('heading', { name: 'Warning 1 of 3' })).toBeInTheDocument();
+    expect(screen.getByText(/You switched away|exam window lost focus/)).toBeInTheDocument();
+  });
+
+  it('flushes a pending answer before posting a violation', async () => {
+    const saved: SaveAnswersBody[] = [];
+    vi.mocked(api.student.saveAnswers).mockImplementation(async (_id, body) => {
+      saved.push(body);
+      return saveOk();
+    });
+    vi.mocked(api.student.postEvent).mockResolvedValue(postEventResult(1));
+    const user = userEvent.setup();
+    renderExam();
+    await screen.findByText('What is 2+2?');
+
+    await user.click(screen.getByRole('radio', { name: '5' }));
+    await act(async () => {
+      document.dispatchEvent(new Event('copy', { cancelable: true }));
+    });
+
+    await waitFor(() => expect(api.student.postEvent).toHaveBeenCalledTimes(1));
+    expect(saved.length).toBe(1);
+    expect(saved[0].answers.find((a) => a.questionId === 'q1')).toMatchObject({
+      selectedOptionIds: ['o2'],
+    });
+    const saveOrder = vi.mocked(api.student.saveAnswers).mock.invocationCallOrder[0];
+    const postOrder = vi.mocked(api.student.postEvent).mock.invocationCallOrder[0];
+    expect(saveOrder).toBeLessThan(postOrder);
+  });
+
+  it('warns with a blocking modal (and fullscreen recovery) when leaving fullscreen', async () => {
+    vi.mocked(api.student.postEvent).mockResolvedValue(postEventResult(1));
+    renderExam();
+    await screen.findByText('What is 2+2?');
+
+    const fs = (value: unknown) => ({ configurable: true, get: () => value });
+    await act(async () => {
+      Object.defineProperty(document, 'fullscreenElement', fs(document.documentElement));
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    await act(async () => {
+      Object.defineProperty(document, 'fullscreenElement', fs(null));
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    Reflect.deleteProperty(document, 'fullscreenElement');
+
+    expect(await screen.findByRole('heading', { name: 'Warning 1 of 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Return to fullscreen' })).toBeInTheDocument();
+    expect(screen.getByText(/3 violations auto-submit your exam/)).toBeInTheDocument();
+  });
+
+  it('auto-submits on the 3rd violation and navigates to the result', async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.student.postEvent)
+      .mockResolvedValueOnce(postEventResult(1))
+      .mockResolvedValueOnce(postEventResult(2))
+      .mockResolvedValueOnce(postEventResult(3, true));
+    renderExam();
+    await screen.findByText('What is 2+2?');
+
+    // Distinct event types from separate user actions (per-type coalescing
+    // would otherwise swallow three rapid copies as one).
+    await act(async () => {
+      document.dispatchEvent(new Event('copy', { cancelable: true }));
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event('paste', { cancelable: true }));
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event('contextmenu', { cancelable: true }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Exam auto-submitted' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'View result' }));
     expect(await screen.findByText('RESULT PAGE')).toBeInTheDocument();
   });
 });
