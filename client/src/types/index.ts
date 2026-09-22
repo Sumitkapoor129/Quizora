@@ -265,7 +265,7 @@ export interface SaveAnswersBody {
 export interface SaveAnswersResponse {
   savedAt: string;
   status: AttemptStatus;
-  endAt: string;
+  endAt: string | null;
 }
 
 export interface ResultSection {

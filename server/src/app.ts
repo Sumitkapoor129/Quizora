@@ -10,6 +10,7 @@ import { notFound } from './middleware/notFound.js';
 import { originCheck } from './middleware/originCheck.js';
 import { adminRouter } from './routes/admin.js';
 import { authRouter } from './routes/auth.js';
+import { studentRouter } from './routes/student.js';
 
 export type RouteMount = (app: Express) => void;
 
@@ -28,6 +29,7 @@ export function createApp(mountRoutes?: RouteMount): Express {
 
   app.use('/api/auth', authRouter);
   app.use('/api/admin', adminRouter);
+  app.use('/api/student', studentRouter);
 
   // Admin-uploaded test images. Extension is server-generated from sniffed
   // magic bytes, so static content-type lookup by extension is safe.
