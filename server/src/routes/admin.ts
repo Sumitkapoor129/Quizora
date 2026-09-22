@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Router, type NextFunction, type Request, type Response } from 'express';
@@ -85,6 +85,86 @@ const testCreateSchema = z.object({
   description: z.string().optional(),
   defaultNegativeMarks: z.number().default(0).refine((v) => v >= 0, 'Default negative marks must be zero or greater.')
 });
+
+// ---- JSON import (Phase 4) ----
+//
+// PUT /tests/:id strips client-supplied ids (whole-doc replace). Imports sit
+// at a stricter boundary: an `id` key anywhere in the raw payload is rejected
+// so the preview hash only ever covers content the server will actually insert.
+// (zod's default strip mode would silently drop unknown keys, so the walk runs
+// on the raw JSON-parsed object BEFORE zod parses it.)
+
+const IMPORT_INVALID_JSON = 'Import content must be a valid JSON object.';
+const IMPORT_ID_FORBIDDEN = "Import payload must not contain 'id' fields. Remove generated ids before importing.";
+
+/** Deep-collects object key paths named `id` (the strip-on-write keys). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function findIdPaths(value: any, base: Array<string | number> = []): Array<Array<string | number>> {
+  const hits: Array<Array<string | number>> = [];
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => hits.push(...findIdPaths(item, [...base, i])));
+  } else if (value !== null && typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value)) {
+      if (key === 'id') hits.push([...base, key]);
+      else hits.push(...findIdPaths(nested, [...base, key]));
+    }
+  }
+  return hits;
+}
+
+const importRequestSchema = z.object({
+  content: z.string({ required_error: 'Import content is required.', invalid_type_error: 'Import content must be a JSON string.' })
+});
+
+const importConfirmSchema = z.object({
+  content: z.string({ required_error: 'Import content is required.', invalid_type_error: 'Import content must be a JSON string.' }),
+  hash: z.string({ required_error: 'Preview hash is required.', invalid_type_error: 'Preview hash must be a string.' })
+});
+
+/**
+ * Shared validate step for both import routes (validate + confirm re-validate):
+ * JSON.parse → INVALID_JSON for non-objects → id-boundary check → authoring
+ * validation. Returns the normalized authoring payload.
+ */
+function parseImportContent(content: string): z.infer<typeof testWriteSchema> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch {
+    throw new AppError(400, 'INVALID_JSON', IMPORT_INVALID_JSON, [{ field: 'content', message: IMPORT_INVALID_JSON }]);
+  }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new AppError(400, 'INVALID_JSON', IMPORT_INVALID_JSON, [{ field: 'content', message: IMPORT_INVALID_JSON }]);
+  }
+
+  const idPaths = findIdPaths(raw);
+  if (idPaths.length > 0) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'Invalid request payload.', idPaths.map((path) => ({
+      field: path.join('.'),
+      message: IMPORT_ID_FORBIDDEN
+    })));
+  }
+
+  return testWriteSchema.parse(raw);
+}
+
+/** sha256 over the exact normalized JSON the confirm step will insert. */
+function hashImportContent(testData: z.infer<typeof testWriteSchema>): string {
+  return createHash('sha256').update(JSON.stringify(testData)).digest('hex');
+}
+
+function summarizeImport(testData: z.infer<typeof testWriteSchema>): object {
+  const questionCount = testData.sections.reduce((n, s) => n + s.questions.length, 0);
+  const totalDurationSec = testData.sections.reduce((n, s) => n + s.durationSec, 0);
+  const totalMarks = testData.sections.reduce((n, s) => n + s.questions.reduce((m, q) => m + q.marks, 0), 0);
+  return {
+    title: testData.title,
+    sectionCount: testData.sections.length,
+    questionCount,
+    totalDurationSec,
+    totalMarks
+  };
+}
 
 // ---- Serialization (contract JSON): stringified _ids, optional fields omitted ----
 
@@ -366,5 +446,45 @@ adminRouter.post(
     const name = `${randomUUID()}${type.ext}`;
     await writeFile(resolve(uploadDir, name), file.buffer);
     res.status(201).json({ url: `/uploads/${name}` });
+  })
+);
+
+adminRouter.post(
+  '/import/validate',
+  asyncHandler(async (req, res) => {
+    const { content } = importRequestSchema.parse(req.body);
+    const testData = parseImportContent(content);
+    res.json({
+      hash: hashImportContent(testData),
+      summary: summarizeImport(testData)
+    });
+  })
+);
+
+adminRouter.post(
+  '/import/confirm',
+  asyncHandler(async (req, res) => {
+    const { content, hash } = importConfirmSchema.parse(req.body);
+    const testData = parseImportContent(content);
+
+    // Stale-preview guard: hash mismatch on confirm means the admin approved a
+    // different payload than this one. Re-validated + re-hashed above, so the
+    // single insertOne below is exactly the content that was previewed.
+    const computedHash = hashImportContent(testData);
+    if (computedHash !== hash) {
+      throw new AppError(409, 'IMPORT_STALE', 'The preview is out of date. Please re-validate and try again.');
+    }
+
+    // One Test.create = one atomic insertOne, all-or-nothing. No status set:
+    // the schema default (DRAFT) applies.
+    const test = await Test.create({
+      title: testData.title,
+      description: testData.description,
+      defaultNegativeMarks: testData.defaultNegativeMarks,
+      shuffleQuestions: testData.shuffleQuestions,
+      shuffleOptions: testData.shuffleOptions,
+      sections: testData.sections as unknown as TestDoc['sections']
+    });
+    res.status(201).json(serializeTest(test));
   })
 );

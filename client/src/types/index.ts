@@ -99,6 +99,24 @@ export interface UploadResponse {
   url: string;
 }
 
+/* ---------- Admin test import ---------- */
+
+export interface ImportSummary {
+  title: string;
+  sectionCount: number;
+  questionCount: number;
+  totalDurationSec: number;
+  totalMarks: number;
+}
+
+export interface ValidateImportResponse {
+  hash: string;
+  summary: ImportSummary;
+}
+
+/** Backend import error details match { field, message }. */
+export type ImportErrorDetail = ErrorDetail;
+
 /* ---------- Student test-taking (exam engine) ---------- */
 
 export type AttemptStatus = 'GATED' | 'IN_PROGRESS' | 'SUBMITTED' | 'TIMED_OUT';

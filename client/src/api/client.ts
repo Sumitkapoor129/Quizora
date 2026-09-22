@@ -16,6 +16,7 @@ import type {
   StartAttemptResponse,
   StudentTestsResponse,
   UploadResponse,
+  ValidateImportResponse,
 } from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
@@ -164,6 +165,12 @@ export const api = {
       form.append('file', file);
       return request<UploadResponse>('/api/admin/uploads', { method: 'POST', body: form });
     },
+  },
+  imports: {
+    validate: (input: { content: string }) =>
+      request<ValidateImportResponse>('/api/admin/import/validate', { method: 'POST', body: JSON.stringify(input) }),
+    confirm: (input: { content: string; hash: string }) =>
+      request<AdminTest>('/api/admin/import/confirm', { method: 'POST', body: JSON.stringify(input) }),
   },
   student: {
     tests: () => request<StudentTestsResponse>('/api/student/tests'),
