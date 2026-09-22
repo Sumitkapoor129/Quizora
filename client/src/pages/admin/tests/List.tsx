@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { Modal } from '@/components/ui/Modal';
+import ImportTestModal from '@/pages/admin/tests/ImportTestModal';
 import type { AdminTestListItem, TestStatus } from '@/types';
 
 const TESTS_KEY = ['admin', 'tests'];
@@ -43,6 +44,7 @@ export default function TestsList() {
   const [banner, setBanner] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<AdminTestListItem | null>(null);
   const [pendingUnpublish, setPendingUnpublish] = useState<AdminTestListItem | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const list = useQuery({ queryKey: TESTS_KEY, queryFn: api.tests.list });
 
@@ -87,6 +89,9 @@ export default function TestsList() {
           <p className="page-sub">Create, publish, and manage tests.</p>
         </div>
         <div className="page-header__actions">
+          <Button variant="secondary" onClick={() => setImportOpen(true)}>
+            Import test
+          </Button>
           <Link className="btn btn--primary btn--md" to="/admin/tests/new">
             Create test
           </Link>
@@ -116,11 +121,16 @@ export default function TestsList() {
       {list.isSuccess && list.data.tests.length === 0 && (
         <EmptyState
           title="No tests yet."
-          description="Create a test, add sections and questions, then publish it for students."
+          description="Create a test, add sections and questions, then publish it for students. Have an export? Import it instead."
           action={
-            <Link className="btn btn--primary btn--md" to="/admin/tests/new">
-              Create your first test
-            </Link>
+            <div className="empty-state__actions">
+              <Button variant="secondary" onClick={() => setImportOpen(true)}>
+                Import test
+              </Button>
+              <Link className="btn btn--primary btn--md" to="/admin/tests/new">
+                Create your first test
+              </Link>
+            </div>
           }
         />
       )}
@@ -224,6 +234,8 @@ export default function TestsList() {
           kept.
         </p>
       </Modal>
+
+      {importOpen && <ImportTestModal onClose={() => setImportOpen(false)} />}
     </>
   );
 }
