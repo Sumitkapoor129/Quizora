@@ -3,12 +3,13 @@ import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
+import { type FilterQuery } from 'mongoose';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { Test, type TestDoc } from '../models/Test.js';
-import { TestAttempt } from '../models/TestAttempt.js';
+import { TestAttempt, type TestAttemptDoc } from '../models/TestAttempt.js';
 import { User } from '../models/User.js';
 
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
@@ -531,7 +532,6 @@ adminRouter.delete(
   '/tests/:id',
   asyncHandler(async (req, res) => {
     const test = await findTest(req.params.id);
-    await assertNotFrozen(test._id);
     test.deletedAt = new Date();
     await test.save();
     res.status(204).end();
@@ -663,5 +663,171 @@ adminRouter.get(
       User.findById(attempt.studentId)
     ]);
     res.json({ attempt: serializeAttemptDetail(attempt, buildContent(test), student) });
+  })
+);
+
+// ---- Analytics (Phase 8): admin-only aggregate over scored attempts ----
+
+/** Event types that count as violations in the analytics view (START/SUBMIT/NETWORK_RECONNECT excluded). */
+const ANALYTICS_VIOLATION_TYPES = new Set<string>([
+  'FULLSCREEN_EXIT',
+  'COPY',
+  'PASTE',
+  'CUT',
+  'CONTEXT_MENU',
+  'VISIBILITY_HIDDEN',
+  'FOCUS_LOST'
+]);
+
+type QuestionAgg = {
+  testId: string;
+  testTitle: string;
+  sectionIndex: number;
+  seq: number;
+  type: string;
+  marks: number;
+  text?: string;
+  attempted: number;
+  correct: number;
+};
+
+adminRouter.get(
+  '/analytics',
+  asyncHandler(async (req, res) => {
+    const { testId } = z
+      .object({ testId: z.string().trim().regex(/^[0-9a-fA-F]{24}$/, 'testId must be a valid ObjectId.').optional() })
+      .parse(req.query);
+
+    const testFilter: FilterQuery<TestAttemptDoc> = testId ? { testId } : {};
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    // # ponytail: JS-side analysis over the 1000 most recent scored attempts —
+    // switch to Mongo aggregation/$facet when volume exceeds ~1000 scored attempts.
+    const [attempts, attemptsToday] = await Promise.all([
+      TestAttempt.find({ ...testFilter, status: { $in: ['SUBMITTED', 'TIMED_OUT'] } })
+        .sort({ _id: -1 })
+        .limit(1000),
+      // attemptsToday counts ALL attempts (any status) submitted in the last 24h.
+      TestAttempt.countDocuments({ ...testFilter, submittedAt: { $gte: since } })
+    ]);
+
+    const total = attempts.length;
+    let scoreSum = 0;
+    let correctPctSum = 0;
+    let highest = -1;
+    let lowest = Infinity;
+    let totalWarnings = 0;
+    let attemptsWithViolations = 0;
+    const buckets = new Array<number>(10).fill(0);
+    const byType: Record<string, number> = {};
+    const questionAgg = new Map<string, QuestionAgg>();
+    let seq = 0;
+
+    for (const attempt of attempts) {
+      const maxScore = attempt.maxScore ?? 0;
+      const pct = maxScore > 0 ? Math.min(100, Math.max(0, ((attempt.score ?? 0) / maxScore) * 100)) : 0;
+      buckets[Math.min(9, Math.floor(pct / 10))] += 1;
+      scoreSum += pct;
+      highest = Math.max(highest, pct);
+      lowest = Math.min(lowest, pct);
+
+      const totalQuestions = attempt.totalQuestions ?? 0;
+      if (totalQuestions > 0) correctPctSum += ((attempt.correctCount ?? 0) / totalQuestions) * 100;
+
+      const warnings = attempt.warningCount ?? 0;
+      totalWarnings += warnings;
+      if (warnings > 0) attemptsWithViolations += 1;
+
+      for (const bp of attempt.blueprint ?? []) {
+        const key = String(bp.questionId);
+        if (!questionAgg.has(key)) {
+          questionAgg.set(key, {
+            testId: String(attempt.testId),
+            testTitle: '',
+            sectionIndex: bp.sectionIndex,
+            seq: seq++,
+            type: bp.type,
+            marks: bp.marks,
+            attempted: 0,
+            correct: 0
+          });
+        }
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const answerByQuestion = new Map<string, any>((attempt.answers ?? []).map((a) => [String(a.questionId), a] as [string, any]));
+      for (const bp of attempt.blueprint ?? []) {
+        const agg = questionAgg.get(String(bp.questionId));
+        if (!agg) continue;
+        const answer = answerByQuestion.get(String(bp.questionId));
+        if (answer && answer.isAttempted === true) {
+          agg.attempted += 1;
+          if (answer.isCorrect === true) agg.correct += 1;
+        }
+      }
+
+      for (const event of attempt.events ?? []) {
+        if (ANALYTICS_VIOLATION_TYPES.has(event.type)) {
+          byType[event.type] = (byType[event.type] ?? 0) + 1;
+        }
+      }
+    }
+
+    // Live question text/title (never correctness) keyed by question _id. The
+    // query intentionally does NOT filter deletedAt — soft-deleted tests still
+    // contribute their text and titles so analytics stays useful after a
+    // delete. A hard-deleted/missing test degrades gracefully: text omitted,
+    // title '' (testId is retained from the attempt).
+    const testIds = [...new Set(attempts.map((a) => String(a.testId)))];
+    const tests = testIds.length
+      ? await Test.find({ _id: { $in: testIds } }).select('title sections.questions._id sections.questions.text')
+      : [];
+    const infoByQuestion = new Map<string, { testId: string; testTitle: string; text?: string }>();
+    for (const t of tests) {
+      for (const section of t.sections ?? []) {
+        for (const q of section.questions ?? []) {
+          const text = q.text?.trim();
+          infoByQuestion.set(String(q._id), { testId: String(t._id), testTitle: t.title, ...(text ? { text } : {}) });
+        }
+      }
+    }
+    for (const [key, agg] of questionAgg) {
+      const info = infoByQuestion.get(key);
+      if (!info) continue;
+      agg.testId = info.testId;
+      agg.testTitle = info.testTitle;
+      if (info.text !== undefined) agg.text = info.text;
+    }
+
+    const perQuestion = [...questionAgg.entries()]
+      .sort((a, b) => a[1].sectionIndex - b[1].sectionIndex || a[1].seq - b[1].seq)
+      .map(([questionId, agg]) => ({
+        questionId,
+        testId: agg.testId,
+        testTitle: agg.testTitle,
+        sectionIndex: agg.sectionIndex,
+        type: agg.type,
+        ...(agg.text !== undefined ? { text: agg.text } : {}),
+        marks: agg.marks,
+        attempted: agg.attempted,
+        correct: agg.correct,
+        difficulty: agg.attempted === 0 ? null : Math.round((agg.correct / agg.attempted) * 1000) / 10
+      }));
+
+    res.json({
+      testId: testId ?? null,
+      summary: {
+        scoredAttempts: total,
+        attemptsToday,
+        avgScorePercent: total ? scoreSum / total : null,
+        highestScorePercent: total ? highest : null,
+        lowestScorePercent: total ? lowest : null,
+        avgCorrectPercent: total ? correctPctSum / total : null,
+        totalWarnings
+      },
+      distribution: buckets.map((count, i) => ({ bucket: i * 10, count })),
+      perQuestion,
+      violations: { byType, attemptsWithViolations, totalWarnings }
+    });
   })
 );

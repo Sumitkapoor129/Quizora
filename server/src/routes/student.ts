@@ -373,6 +373,19 @@ async function findOwnAttempt(attemptId: string, studentId: string): Promise<any
   return attempt;
 }
 
+/**
+ * Blocks an in-flight attempt once its test has been soft-deleted (or gone).
+ * Terminal attempts still pass: their result was already scored server-side.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function assertTestAvailable(attempt: any): Promise<void> {
+  if (attempt.status === 'SUBMITTED' || attempt.status === 'TIMED_OUT') return;
+  const test = await Test.findOne({ _id: attempt.testId, deletedAt: null });
+  if (!test) {
+    throw new AppError(409, 'TEST_NOT_AVAILABLE', 'This test is no longer available.');
+  }
+}
+
 /** Wall-clock tolerance for the server-side deadline (network latency, clock skew). */
 const OVERDUE_GRACE_MS = 5_000;
 
@@ -525,6 +538,7 @@ studentRouter.get(
   asyncHandler(async (req, res) => {
     const attempt = await findOwnAttempt(req.params.attemptId, req.user!.id);
     await lazyExpire(attempt);
+    await assertTestAvailable(attempt);
     const test = await Test.findById(attempt.testId);
     res.json({ attempt: serializeAttempt(attempt, buildContent(test)) });
   })
@@ -535,6 +549,7 @@ studentRouter.put(
   asyncHandler(async (req, res) => {
     const attempt = await findOwnAttempt(req.params.attemptId, req.user!.id);
     await lazyExpire(attempt);
+    await assertTestAvailable(attempt);
     if (attempt.status !== 'IN_PROGRESS') {
       throw new AppError(409, 'NOT_IN_PROGRESS', 'This attempt is not in progress.');
     }
@@ -579,6 +594,7 @@ studentRouter.post(
   asyncHandler(async (req, res) => {
     const attempt = await findOwnAttempt(req.params.attemptId, req.user!.id);
     await lazyExpire(attempt);
+    await assertTestAvailable(attempt);
     if (attempt.status !== 'IN_PROGRESS') {
       throw new AppError(409, 'NOT_IN_PROGRESS', 'This attempt is not in progress.');
     }
@@ -633,6 +649,7 @@ studentRouter.post(
     if (attempt.status !== 'IN_PROGRESS') {
       throw new AppError(409, 'NOT_STARTED', 'This attempt has not been started yet.');
     }
+    await assertTestAvailable(attempt);
 
     const submittedAt = new Date();
     finalizeSubmit(attempt, submittedAt);

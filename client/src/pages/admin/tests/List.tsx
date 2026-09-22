@@ -204,8 +204,8 @@ export default function TestsList() {
         }
       >
         <p>
-          Delete <strong>{pendingDelete?.title}</strong>? This can't be undone. A test with student attempts can't be
-          deleted.
+          Delete <strong>{pendingDelete?.title}</strong>? This stops the test for any student currently taking it.
+          This can't be undone.
         </p>
       </Modal>
 

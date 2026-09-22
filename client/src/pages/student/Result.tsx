@@ -1,22 +1,13 @@
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/client';
-import { Badge, type BadgeVariant } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { Spinner } from '@/components/ui/Spinner';
 import { formatDateTime } from '@/utils/format';
+import { ATTEMPT_STATUS_LABEL, ATTEMPT_STATUS_VARIANT } from '@/utils/attemptStatus';
 import type { ResultQuestion } from '@/types';
-
-const STATUS_LABEL: Record<string, string> = {
-  SUBMITTED: 'Submitted',
-  TIMED_OUT: 'Timed out',
-};
-
-const STATUS_VARIANT: Record<string, BadgeVariant> = {
-  SUBMITTED: 'success',
-  TIMED_OUT: 'warn',
-};
 
 function questionStatus(q: ResultQuestion): { label: string; variant: BadgeVariant } {
   if (!q.isAttempted) return { label: 'Not attempted', variant: 'default' };
@@ -66,7 +57,7 @@ export default function Result() {
   const attempt = result.data?.attempt;
   if (!attempt) return null;
 
-  const status = STATUS_LABEL[attempt.status] ?? attempt.status;
+  const status = ATTEMPT_STATUS_LABEL[attempt.status] ?? attempt.status;
 
   return (
     <div className="exam-shell">
@@ -87,7 +78,7 @@ export default function Result() {
             <span>{attempt.correctCount} / {attempt.totalQuestions} correct</span>
             <span>Submitted {formatDateTime(attempt.submittedAt)}</span>
           </div>
-          <Badge variant={STATUS_VARIANT[attempt.status]}>{status}</Badge>
+          <Badge variant={ATTEMPT_STATUS_VARIANT[attempt.status]}>{status}</Badge>
         </Card>
 
         <section className="section" aria-labelledby="sections-heading">

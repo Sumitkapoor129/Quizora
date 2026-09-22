@@ -13,6 +13,7 @@ import Login from '@/pages/auth/Login';
 import Register from '@/pages/auth/Register';
 import NotFound from '@/pages/NotFound';
 import Placeholder from '@/pages/Placeholder';
+import Analytics from '@/pages/admin/analytics';
 import StudentDashboard from '@/pages/student/Dashboard';
 import ExamRunner from '@/pages/student/ExamRunner';
 import Result from '@/pages/student/Result';
@@ -132,7 +133,7 @@ export const routes: RouteObject[] = [
       },
       {
         path: 'analytics',
-        element: <Placeholder title="Analytics" description="Performance trends across tests and students." />,
+        element: <Analytics />,
       },
     ],
   },

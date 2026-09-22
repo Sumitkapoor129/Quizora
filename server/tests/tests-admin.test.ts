@@ -526,14 +526,16 @@ describe('DELETE /api/admin/tests/:id', () => {
     expect(list.body.tests.map((t: { title: string }) => t.title)).not.toContain('Doomed');
   });
 
-  it('returns 409 TEST_FROZEN when a student attempt exists', async () => {
+  it('soft-deletes even when a student attempt exists', async () => {
     const created = await createTest('Frozen Delete');
     const { TestAttempt } = await import('../src/models/TestAttempt.js');
     await TestAttempt.create({ testId: created.id, studentId });
 
     const res = await request(app).delete(`/api/admin/tests/${created.id}`).set('Cookie', adminCookie);
-    expect(res.status).toBe(409);
-    expect(res.body).toEqual({ error: { code: 'TEST_FROZEN', message: FROZEN } });
+    expect(res.status).toBe(204);
+
+    const get = await request(app).get(`/api/admin/tests/${created.id}`).set('Cookie', adminCookie);
+    expect(get.status).toBe(404);
   });
 });
 

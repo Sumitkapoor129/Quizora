@@ -29,13 +29,13 @@ function enterFullscreen(): void {
 }
 
 export default function TestInstructions() {
-  const { id = '' } = useParams();
+  const { testId = '' } = useParams();
   const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
 
   const listQuery = useQuery({ queryKey: ['student', 'tests'], queryFn: () => api.student.tests() });
-  const test = listQuery.data?.tests.find((item) => item.id === id) ?? null;
+  const test = listQuery.data?.tests.find((item) => item.id === testId) ?? null;
 
   // A GATED attempt already exists: pull its sections so the student sees
   // per-section timing/negative marks before resuming into the exam.
@@ -57,17 +57,17 @@ export default function TestInstructions() {
     setStartError(null);
     try {
       // POST attempts is idempotent: returns the existing attempt or creates one.
-      const created = await api.student.createAttempt(id);
+      const created = await api.student.createAttempt(testId);
       const attemptId = created.attempt.id;
       await api.student.startAttempt(attemptId);
       enterFullscreen();
-      navigate(`/student/tests/${id}/attempt/${attemptId}`, { replace: true });
+      navigate(`/student/tests/${testId}/attempt/${attemptId}`, { replace: true });
     } catch (err) {
       setStarting(false);
       if (err instanceof ApiError && err.code === 'EXAM_ALREADY_SUBMITTED') {
         const details = err.details as { attemptId?: string } | undefined;
         if (details?.attemptId) {
-          navigate(`/student/tests/${id}/result/${details.attemptId}`, { replace: true });
+          navigate(`/student/tests/${testId}/result/${details.attemptId}`, { replace: true });
           return;
         }
       }

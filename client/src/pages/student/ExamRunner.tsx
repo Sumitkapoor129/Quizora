@@ -374,6 +374,9 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
     function onFullscreenChange() {
       if (document.fullscreenElement) {
         wasFullscreenRef.current = true;
+        // Re-entering fullscreen is the only way out of the FULLSCREEN_EXIT
+        // warning (no "Continue exam" escape hatch), so dismiss it here.
+        setWarning((prev) => (prev?.type === 'FULLSCREEN_EXIT' ? null : prev));
         return;
       }
       if (wasFullscreenRef.current) {
@@ -742,7 +745,12 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
 
       <Modal
         open={warning !== null && !autoSubmitted}
-        onClose={() => setWarning(null)}
+        onClose={() => {
+          // FULLSCREEN_EXIT offers only two choices: re-enter fullscreen or
+          // exit the exam. Esc/✕ must not dismiss it while out of fullscreen.
+          if (confirmSubmitting || warning?.type === 'FULLSCREEN_EXIT') return;
+          setWarning(null);
+        }}
         title={warning ? `Warning ${warning.count} of ${MAX_WARNINGS}` : 'Warning'}
         id="exam-warning-modal"
       >
@@ -750,14 +758,27 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
           <>
             <p>{WARNING_MESSAGES[warning.type]}</p>
             <p>{MAX_WARNINGS} violations auto-submit your exam.</p>
-            {warning.type === 'FULLSCREEN_EXIT' && <p>Return to fullscreen to continue.</p>}
+            {warning.type === 'FULLSCREEN_EXIT' && (
+              <p>Return to fullscreen to continue, or exit the exam to submit.</p>
+            )}
+            {warning.type === 'FULLSCREEN_EXIT' && submitError && (
+              <div className="banner banner--error" role="alert">
+                <p className="banner__text">{submitError}</p>
+              </div>
+            )}
             <div className="modal__footer">
-              {warning.type === 'FULLSCREEN_EXIT' && (
-                <Button variant="secondary" onClick={enterFullscreen}>
-                  Return to fullscreen
-                </Button>
+              {warning.type === 'FULLSCREEN_EXIT' ? (
+                <>
+                  <Button variant="secondary" disabled={confirmSubmitting} onClick={enterFullscreen}>
+                    Enter fullscreen
+                  </Button>
+                  <Button loading={confirmSubmitting} onClick={() => void handleConfirmSubmit()}>
+                    Exit exam
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={() => setWarning(null)}>Continue exam</Button>
               )}
-              <Button onClick={() => setWarning(null)}>Continue exam</Button>
             </div>
           </>
         )}
@@ -816,6 +837,23 @@ export default function ExamRunner() {
   }
 
   if (attemptQuery.isError) {
+    if (attemptQuery.error instanceof ApiError && attemptQuery.error.code === 'TEST_NOT_AVAILABLE') {
+      return (
+        <div className="exam-shell">
+          <div className="exam-error">
+            <ErrorState
+              title="This test is no longer available."
+              message="Your instructor deleted or unpublished the test, so this exam has been stopped."
+            />
+            <div className="exam-error__actions">
+              <Link className="btn btn--secondary btn--md" to="/student">
+                Back to tests
+              </Link>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="exam-shell">
         <div className="exam-error">

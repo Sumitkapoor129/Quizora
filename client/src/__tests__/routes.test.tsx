@@ -73,7 +73,9 @@ describe('route guards', () => {
     });
 
     expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
-    expect(screen.getByText('Published tests')).toBeInTheDocument();
+    // API calls are unmocked here, so the dashboard surfaces the fetch failure
+    // instead of rendering misleading zero stats.
+    expect(await screen.findByText('Something went wrong.')).toBeInTheDocument();
   });
 
   it('sends an unauthenticated visitor to /login', async () => {

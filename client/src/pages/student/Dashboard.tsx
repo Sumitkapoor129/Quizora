@@ -1,30 +1,17 @@
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/client';
-import { Badge, type BadgeVariant } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useAuth } from '@/hooks/useAuth';
+import { ATTEMPT_STATUS_LABEL, ATTEMPT_STATUS_VARIANT } from '@/utils/attemptStatus';
 import type { StudentTestListItem } from '@/types';
 
 function durationLabel(totalSec: number): string {
   return `${Math.round(totalSec / 60)} min`;
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  GATED: 'Not started',
-  IN_PROGRESS: 'In progress',
-  SUBMITTED: 'Submitted',
-  TIMED_OUT: 'Timed out',
-};
-
-const STATUS_VARIANT: Record<string, BadgeVariant> = {
-  GATED: 'default',
-  IN_PROGRESS: 'accent',
-  SUBMITTED: 'success',
-  TIMED_OUT: 'warn',
-};
 
 function attemptAction(test: StudentTestListItem): { label: string; to: string } {
   const attempt = test.attempt;
@@ -90,7 +77,9 @@ export default function StudentDashboard() {
                     <Badge variant="default">
                       {test.questionCount} question{test.questionCount === 1 ? '' : 's'}
                     </Badge>
-                    {status && <Badge variant={STATUS_VARIANT[status]}>{STATUS_LABEL[status]}</Badge>}
+                    {status && (
+                      <Badge variant={ATTEMPT_STATUS_VARIANT[status]}>{ATTEMPT_STATUS_LABEL[status]}</Badge>
+                    )}
                   </div>
                   <p className="test-card__meta">
                     {durationLabel(test.totalDurationSec)} · {test.totalMarks} marks

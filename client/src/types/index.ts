@@ -367,3 +367,49 @@ export interface AdminAttemptListResponse {
 export interface AdminAttemptDetailResponse {
   attempt: AdminAttemptDetail;
 }
+
+/* ---------- Admin analytics ---------- */
+
+export type AdminAnalyticsQuestionType = 'SINGLE' | 'MULTI';
+
+export interface AdminAnalyticsDistributionBucket {
+  bucket: number;
+  count: number;
+}
+
+export interface AdminAnalyticsPerQuestion {
+  questionId: string;
+  testId: string;
+  testTitle: string;
+  sectionIndex: number;
+  type: AdminAnalyticsQuestionType;
+  text?: string;
+  marks: number;
+  attempted: number;
+  correct: number;
+  difficulty: number | null;
+}
+
+export interface AdminAnalyticsViolations {
+  byType: Record<string, number>;
+  attemptsWithViolations: number;
+  totalWarnings: number;
+}
+
+export interface AdminAnalyticsSummary {
+  scoredAttempts: number;
+  attemptsToday: number;
+  avgScorePercent: number | null;
+  highestScorePercent: number | null;
+  lowestScorePercent: number | null;
+  avgCorrectPercent: number | null;
+  totalWarnings: number;
+}
+
+export interface AdminAnalytics {
+  testId: string | null;
+  summary: AdminAnalyticsSummary;
+  distribution: AdminAnalyticsDistributionBucket[];
+  perQuestion: AdminAnalyticsPerQuestion[];
+  violations: AdminAnalyticsViolations;
+}

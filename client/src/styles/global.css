@@ -797,6 +797,13 @@ body {
     display: inline-flex;
   }
 
+  /* Between the phone single-column and the desktop 3-column widths, let the
+     stat cards reflow by content (auto-fit collapses empty tracks, so the
+     Dashboard's three cards keep an identical 3-up look). */
+  .stat-grid {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  }
+
   .sidebar {
     position: fixed;
     top: 56px;
@@ -994,6 +1001,53 @@ body {
 .import-note {
   font-size: var(--text-sm);
   color: var(--ink-muted);
+}
+
+.import-example {
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.import-example summary {
+  cursor: pointer;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+.import-example summary:hover {
+  color: var(--ink);
+}
+
+.import-example__rules {
+  margin: var(--space-3) 0;
+  padding-left: var(--space-5);
+  color: var(--ink-muted);
+}
+
+.import-example__rules li + li {
+  margin-top: var(--space-1);
+}
+
+.import-example__rules code {
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+
+.import-example pre {
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--surface-2, #f7f7f8);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow-x: auto;
+}
+
+.import-example pre code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--ink);
+  white-space: pre;
 }
 
 /* ---------- Tests list ---------- */
@@ -1879,5 +1933,123 @@ textarea.field__input {
 
   .attempt-option__markers {
     width: 100%;
+  }
+}
+
+/* ---------- Admin analytics ---------- */
+.card__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.card__header .section-title {
+  margin-bottom: 0;
+}
+
+.card__sub {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+.section-group {
+  margin-top: var(--space-5);
+}
+
+.section-group .section-group {
+  margin-top: 0;
+}
+
+.section-group .subsection-title {
+  margin-bottom: var(--space-2);
+}
+
+.histogram {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.histogram__bar {
+  display: grid;
+  grid-template-columns: 72px 1fr 40px;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.histogram__label {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.histogram__track {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  height: 12px;
+  overflow: hidden;
+}
+
+.histogram__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-sm);
+}
+
+.histogram__count {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--ink-muted);
+}
+
+.violations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.violations__summary {
+  display: flex;
+  gap: var(--space-6);
+}
+
+.violations__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin-bottom: var(--space-2);
+}
+
+.filter-field {
+  max-width: 320px;
+}
+
+.filter-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.filter-error .field__error {
+  margin-top: 0;
+}
+
+.violations__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+@media (max-width: 640px) {
+  .histogram__bar {
+    grid-template-columns: 64px 1fr 36px;
+    gap: var(--space-2);
   }
 }

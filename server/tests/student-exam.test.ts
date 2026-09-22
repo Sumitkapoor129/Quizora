@@ -462,6 +462,36 @@ describe('POST /api/student/attempts/:attemptId/start', () => {
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('TEST_NOT_AVAILABLE');
   });
+
+  it('stops an IN_PROGRESS attempt with TEST_NOT_AVAILABLE once the test is deleted', async () => {
+    const testId = await publishTest('Delete Trap', [
+      {
+        title: 'S',
+        order: 0,
+        durationSec: 600,
+        questions: [singleQ(0, 'q?', 1, [opt(0, 'a', true), opt(1, 'b')])]
+      }
+    ]);
+    const attemptId = await createAttempt(testId);
+    const started = await startAttempt(attemptId);
+    const q1 = started.attempt.sections[0].questions[0];
+    await request(app).delete(`/api/admin/tests/${testId}`).set('Cookie', adminCookie);
+
+    const get = await request(app).get(`/api/student/attempts/${attemptId}`).set('Cookie', studentCookie);
+    expect(get.status).toBe(409);
+    expect(get.body.error.code).toBe('TEST_NOT_AVAILABLE');
+
+    const put = await request(app)
+      .put(`/api/student/attempts/${attemptId}/answers`)
+      .set('Cookie', studentCookie)
+      .send({ currentQuestionIndex: 0, answers: [{ questionId: q1.questionId, selectedOptionIds: [q1.options[0].optionId] }] });
+    expect(put.status).toBe(409);
+    expect(put.body.error.code).toBe('TEST_NOT_AVAILABLE');
+
+    const submit = await request(app).post(`/api/student/attempts/${attemptId}/submit`).set('Cookie', studentCookie);
+    expect(submit.status).toBe(409);
+    expect(submit.body.error.code).toBe('TEST_NOT_AVAILABLE');
+  });
 });
 
 // ---- 4. Save answers ----

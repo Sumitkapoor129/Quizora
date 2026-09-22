@@ -182,6 +182,10 @@ export const api = {
       },
       get: (attemptId: string) => request<AdminAttemptDetailResponse>(`/api/admin/attempts/${attemptId}`),
     },
+    analytics: (testId?: string) => {
+      const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
+      return request<import('@/types').AdminAnalytics>(`/api/admin/analytics${query}`);
+    },
   },
   student: {
     tests: () => request<StudentTestsResponse>('/api/student/tests'),

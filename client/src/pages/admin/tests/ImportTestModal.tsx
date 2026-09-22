@@ -9,6 +9,48 @@ import type { ErrorDetail, ImportSummary } from '@/types';
 
 const TESTS_KEY = ['admin', 'tests'];
 
+const EXAMPLE_JSON = `{
+  "title": "Biology Midterm",
+  "description": "Covers chapters 1-5.",
+  "defaultNegativeMarks": 0.5,
+  "shuffleQuestions": true,
+  "shuffleOptions": true,
+  "sections": [
+    {
+      "title": "Section A",
+      "order": 0,
+      "durationSec": 1800,
+      "negativeMarksOverride": 0.25,
+      "questions": [
+        {
+          "type": "SINGLE",
+          "order": 0,
+          "text": "Which organ pumps blood?",
+          "marks": 2,
+          "negativeMarks": 0.5,
+          "explanation": "The heart pumps blood.",
+          "options": [
+            { "order": 0, "text": "Heart", "isCorrect": true },
+            { "order": 1, "text": "Liver", "isCorrect": false },
+            { "order": 2, "text": "Kidney", "isCorrect": false }
+          ]
+        },
+        {
+          "type": "MULTI",
+          "order": 1,
+          "text": "Select all planets.",
+          "marks": 3,
+          "options": [
+            { "order": 0, "text": "Mars", "isCorrect": true },
+            { "order": 1, "text": "Earth", "isCorrect": true },
+            { "order": 2, "text": "Moon", "isCorrect": false }
+          ]
+        }
+      ]
+    }
+  ]
+}`;
+
 function plural(count: number, singular: string): string {
   return `${count} ${singular}${count === 1 ? '' : 's'}`;
 }
@@ -164,6 +206,30 @@ export default function ImportTestModal({ onClose }: ImportTestModalProps) {
               setDetails([]);
             }}
           />
+          <details className="import-example">
+            <summary>View example JSON format</summary>
+            <ul className="import-example__rules">
+              <li>
+                Do <strong>not</strong> include any <code>id</code> fields — they are rejected.
+              </li>
+              <li>
+                <code>durationSec</code> is in seconds (e.g. 1800 = 30 minutes).
+              </li>
+              <li>At least one section with at least one question is required.</li>
+              <li>
+                <code>title</code>, <code>text</code>/<code>isCorrect</code>, <code>marks</code> and{' '}
+                <code>durationSec</code> are required where shown.
+              </li>
+              <li>
+                Every question needs at least 2 options; a <code>SINGLE</code> question needs exactly one correct
+                option, a <code>MULTI</code> question at least one. <code>order</code> is a whole number starting at 0
+                per section/question.
+              </li>
+            </ul>
+            <pre>
+              <code>{EXAMPLE_JSON}</code>
+            </pre>
+          </details>
         </>
       ) : (
         <div>

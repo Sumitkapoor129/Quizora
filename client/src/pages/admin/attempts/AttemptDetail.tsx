@@ -7,17 +7,8 @@ import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { Spinner } from '@/components/ui/Spinner';
 import { formatDateTime } from '@/utils/format';
+import { ATTEMPT_STATUS_LABEL, ATTEMPT_STATUS_VARIANT } from '@/utils/attemptStatus';
 import type { AdminAttemptDetail, AdminAttemptQuestion } from '@/types';
-
-const STATUS_LABEL: Record<string, string> = {
-  SUBMITTED: 'Submitted',
-  TIMED_OUT: 'Timed out',
-};
-
-const STATUS_VARIANT: Record<string, BadgeVariant> = {
-  SUBMITTED: 'success',
-  TIMED_OUT: 'warn',
-};
 
 /** Anti-cheat events that represent a violation; everything else is informational. */
 const VIOLATION_TYPES: ReadonlySet<string> = new Set([
@@ -117,7 +108,9 @@ export default function AttemptDetail() {
           </p>
         </div>
         <div className="page-header__actions">
-          <Badge variant={STATUS_VARIANT[attempt.status]}>{STATUS_LABEL[attempt.status] ?? attempt.status}</Badge>
+          <Badge variant={ATTEMPT_STATUS_VARIANT[attempt.status]}>
+            {ATTEMPT_STATUS_LABEL[attempt.status] ?? attempt.status}
+          </Badge>
         </div>
       </div>
 

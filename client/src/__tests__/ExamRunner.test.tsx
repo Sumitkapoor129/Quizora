@@ -411,7 +411,10 @@ describe('ExamRunner', () => {
     Reflect.deleteProperty(document, 'fullscreenElement');
 
     expect(await screen.findByRole('heading', { name: 'Warning 1 of 3' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Return to fullscreen' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Enter fullscreen' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Exit exam' })).toBeInTheDocument();
+    // FULLSCREEN_EXIT must not offer a dismiss-and-continue escape hatch.
+    expect(screen.queryByRole('button', { name: 'Continue exam' })).not.toBeInTheDocument();
     expect(screen.getByText(/3 violations auto-submit your exam/)).toBeInTheDocument();
   });
 
