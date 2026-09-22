@@ -37,6 +37,12 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   } else if (err instanceof mongoose.Error.CastError) {
     status = 400;
     body = { error: { code: 'INVALID_ID', message: 'Invalid identifier format.' } };
+  } else if (err instanceof mongoose.Error.VersionError) {
+    // Two overlapping writers on the same document (e.g. autosave racing
+    // submit). The document state is a legitimate serialization conflict —
+    // surface as 409, never 500.
+    status = 409;
+    body = { error: { code: 'CONCURRENCY_CONFLICT', message: 'The attempt changed concurrently. Please retry.' } };
   } else if (typeof err === 'object' && err !== null && 'type' in err && (err as { type?: string }).type === 'entity.too.large') {
     status = 413;
     body = { error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request payload is too large.' } };
