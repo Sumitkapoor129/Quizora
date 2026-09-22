@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type Express, type Request, type Response } from 'express';
@@ -6,6 +8,7 @@ import { env } from './config/env.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFound } from './middleware/notFound.js';
 import { originCheck } from './middleware/originCheck.js';
+import { adminRouter } from './routes/admin.js';
 import { authRouter } from './routes/auth.js';
 
 export type RouteMount = (app: Express) => void;
@@ -24,6 +27,13 @@ export function createApp(mountRoutes?: RouteMount): Express {
   });
 
   app.use('/api/auth', authRouter);
+  app.use('/api/admin', adminRouter);
+
+  // Admin-uploaded test images. Extension is server-generated from sniffed
+  // magic bytes, so static content-type lookup by extension is safe.
+  const uploadDir = resolve(env.UPLOAD_DIR);
+  mkdirSync(uploadDir, { recursive: true });
+  app.use('/uploads', express.static(uploadDir, { index: false, maxAge: '30d', immutable: true }));
 
   // Test hook: routes mounted here sit before notFound/errorHandler.
   mountRoutes?.(app);

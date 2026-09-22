@@ -32,6 +32,8 @@ export const testSchema = new Schema(
     description: { type: String },
     status: { type: String, enum: ['DRAFT', 'PUBLISHED', 'ARCHIVED'], default: 'DRAFT' },
     defaultNegativeMarks: { type: Number, default: 0 },
+    shuffleQuestions: { type: Boolean, default: true },
+    shuffleOptions: { type: Boolean, default: true },
     deletedAt: { type: Date },
     sections: [sectionSchema]
   },

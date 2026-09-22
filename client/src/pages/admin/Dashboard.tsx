@@ -1,4 +1,4 @@
-import { Button } from '@/components/ui/Button';
+import { Link } from 'react-router-dom';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 
@@ -34,9 +34,9 @@ export default function AdminDashboard() {
           title="No students have attempted tests yet."
           description="When students submit an attempt, scores and averages will appear here."
           action={
-            <Button disabled title="Test creation arrives in a later phase.">
+            <Link className="btn btn--primary btn--md" to="/admin/tests/new">
               Create your first test
-            </Button>
+            </Link>
           }
         />
       </section>

@@ -1,6 +1,27 @@
-import type { ApiErrorBody, AuthUser, Role, SessionResponse } from '@/types';
+import type {
+  AdminTest,
+  AdminTestWrite,
+  AntiCheatEventType,
+  ApiErrorBody,
+  AttemptResponse,
+  AttemptResultResponse,
+  AuthUser,
+  CreateAttemptResponse,
+  ListTestsResponse,
+  PostEventResponse,
+  Role,
+  SaveAnswersBody,
+  SaveAnswersResponse,
+  SessionResponse,
+  StartAttemptResponse,
+  StudentTestsResponse,
+  UploadResponse,
+} from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+
+/** Absolute URL for a relative asset path (e.g. `/uploads/x.png`). */
+export const assetUrl = (path?: string | null): string => (path ? `${BASE_URL}${path}` : '');
 
 export class ApiError extends Error {
   code: string;
@@ -67,12 +88,18 @@ function refreshSession(): Promise<boolean> {
 }
 
 async function request<T>(path: string, init: RequestInit = {}, allowRefresh = true): Promise<T> {
+  // Multipart bodies must set their own boundary — never force JSON there.
+  const headers =
+    typeof FormData !== 'undefined' && init.body instanceof FormData
+      ? init.headers
+      : { 'Content-Type': 'application/json', ...init.headers };
+
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, {
       ...init,
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...init.headers },
+      headers,
     });
   } catch {
     throw new ApiError(0, {
@@ -119,5 +146,44 @@ export const api = {
     logout: () => request<void>('/api/auth/logout', { method: 'POST' }, false),
     refresh: () => request<SessionResponse>('/api/auth/refresh', { method: 'POST' }, false).then(mapSession),
     me: () => request<SessionResponse>('/api/auth/me', {}).then(mapSession),
+  },
+  tests: {
+    list: () => request<ListTestsResponse>('/api/admin/tests'),
+    get: (id: string) => request<AdminTest>(`/api/admin/tests/${id}`),
+    create: (input: { title: string; description?: string; defaultNegativeMarks?: number }) =>
+      request<AdminTest>('/api/admin/tests', { method: 'POST', body: JSON.stringify(input) }),
+    update: (id: string, body: AdminTestWrite) =>
+      request<AdminTest>(`/api/admin/tests/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+    remove: (id: string) => request<void>(`/api/admin/tests/${id}`, { method: 'DELETE' }),
+    publish: (id: string) => request<AdminTest>(`/api/admin/tests/${id}/publish`, { method: 'POST' }),
+    unpublish: (id: string) => request<AdminTest>(`/api/admin/tests/${id}/unpublish`, { method: 'POST' }),
+  },
+  uploads: {
+    upload: (file: File) => {
+      const form = new FormData();
+      form.append('file', file);
+      return request<UploadResponse>('/api/admin/uploads', { method: 'POST', body: form });
+    },
+  },
+  student: {
+    tests: () => request<StudentTestsResponse>('/api/student/tests'),
+    createAttempt: (testId: string) =>
+      request<CreateAttemptResponse>(`/api/student/tests/${testId}/attempts`, { method: 'POST' }),
+    startAttempt: (attemptId: string) =>
+      request<StartAttemptResponse>(`/api/student/attempts/${attemptId}/start`, { method: 'POST' }),
+    attempt: (attemptId: string) => request<AttemptResponse>(`/api/student/attempts/${attemptId}`),
+    saveAnswers: (attemptId: string, body: SaveAnswersBody) =>
+      request<SaveAnswersResponse>(`/api/student/attempts/${attemptId}/answers`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+    postEvent: (attemptId: string, body: { type: AntiCheatEventType; payload?: unknown }) =>
+      request<PostEventResponse>(`/api/student/attempts/${attemptId}/events`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    submit: (attemptId: string) =>
+      request<AttemptResultResponse>(`/api/student/attempts/${attemptId}/submit`, { method: 'POST' }),
+    result: (attemptId: string) => request<AttemptResultResponse>(`/api/student/attempts/${attemptId}/result`),
   },
 };

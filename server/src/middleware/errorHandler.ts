@@ -37,6 +37,9 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   } else if (err instanceof mongoose.Error.CastError) {
     status = 400;
     body = { error: { code: 'INVALID_ID', message: 'Invalid identifier format.' } };
+  } else if (typeof err === 'object' && err !== null && 'type' in err && (err as { type?: string }).type === 'entity.too.large') {
+    status = 413;
+    body = { error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request payload is too large.' } };
   } else if (err instanceof AppError) {
     status = err.statusCode;
     body = {

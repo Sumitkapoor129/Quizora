@@ -21,7 +21,9 @@ const envSchema = z.object({
   COOKIE_SECURE: z
     .enum(['true', 'false'])
     .default('false')
-    .transform((v) => v === 'true')
+    .transform((v) => v === 'true'),
+  // Directory for admin-uploaded test images (relative to process cwd).
+  UPLOAD_DIR: z.string().default('uploads')
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -70,5 +72,6 @@ export const env = {
   JWT_ACCESS_SECRET: parsed.data.JWT_ACCESS_SECRET ?? (isTest ? 'test-access-secret' : ''),
   JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET ?? (isTest ? 'test-refresh-secret' : ''),
   CLIENT_ORIGIN: parsed.data.CLIENT_ORIGIN,
-  COOKIE_SECURE: parsed.data.COOKIE_SECURE
+  COOKIE_SECURE: parsed.data.COOKIE_SECURE,
+  UPLOAD_DIR: parsed.data.UPLOAD_DIR
 } as const;

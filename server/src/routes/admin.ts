@@ -1,0 +1,370 @@
+import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { Router, type NextFunction, type Request, type Response } from 'express';
+import multer from 'multer';
+import { z } from 'zod';
+import { env } from '../config/env.js';
+import { AppError } from '../errors.js';
+import { authenticate, requireRole } from '../middleware/auth.js';
+import { Test, type TestDoc } from '../models/Test.js';
+import { TestAttempt } from '../models/TestAttempt.js';
+
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+const uploadDir = resolve(env.UPLOAD_DIR);
+
+const TITLE_REQUIRED = 'Test title is required.';
+const SECTION_TITLE_REQUIRED = 'Section title is required.';
+const SINGLE_ONE_CORRECT = 'A single-answer question must have exactly one correct option.';
+const MULTI_AT_LEAST_ONE = 'A multi-answer question needs at least one correct option.';
+const TWO_OPTIONS = 'Each question needs at least two options.';
+const OPTION_CONTENT = 'Each option needs text or an image.';
+
+const requiredString = (message: string) =>
+  z.string({ required_error: message, invalid_type_error: message }).trim().min(1, message);
+
+const orderField = z
+  .number({ invalid_type_error: 'Order must be a number.' })
+  .int('Order must be a whole number.')
+  .nonnegative('Order must be zero or greater.');
+
+const optionWrite = z
+  .object({
+    order: orderField,
+    text: z.string().optional(),
+    imageUrl: z.string().optional(),
+    isCorrect: z.boolean({ required_error: 'Each option needs a correct/incorrect flag.' })
+  })
+  .refine((o) => Boolean(o.text?.trim()) || Boolean(o.imageUrl), { message: OPTION_CONTENT });
+
+const questionWrite = z
+  .object({
+    type: z.enum(['SINGLE', 'MULTI'], { required_error: 'Question type is required.' }),
+    order: orderField,
+    text: z.string().optional(),
+    imageUrl: z.string().optional(),
+    marks: z.number({ required_error: 'Question marks are required.' }).nonnegative('Marks must be zero or greater.'),
+    negativeMarks: z.number().optional().refine((v) => v === undefined || v >= 0, 'Negative marks must be zero or greater.'),
+    explanation: z.string().optional(),
+    options: z.array(optionWrite).min(2, TWO_OPTIONS)
+  })
+  .superRefine((q, ctx) => {
+    const correct = q.options.filter((o) => o.isCorrect).length;
+    if (q.type === 'SINGLE') {
+      if (correct !== 1) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: SINGLE_ONE_CORRECT });
+      }
+    } else if (correct < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: MULTI_AT_LEAST_ONE });
+    }
+  });
+
+const sectionWrite = z.object({
+  title: requiredString(SECTION_TITLE_REQUIRED),
+  order: orderField,
+  durationSec: z
+    .number({ required_error: 'Section duration is required.' })
+    .int('Duration must be a whole number of seconds.')
+    .nonnegative('Duration must be zero or greater.'),
+  negativeMarksOverride: z.number().optional().refine((v) => v === undefined || v >= 0, 'Negative marks override must be zero or greater.'),
+  questions: z.array(questionWrite)
+});
+
+/** PUT body: the whole test minus id/status/createdAt/updatedAt. */
+const testWriteSchema = z.object({
+  title: requiredString(TITLE_REQUIRED),
+  description: z.string().optional(),
+  defaultNegativeMarks: z.number().default(0).refine((v) => v >= 0, 'Default negative marks must be zero or greater.'),
+  shuffleQuestions: z.boolean({ invalid_type_error: 'shuffleQuestions must be a boolean.' }).default(true),
+  shuffleOptions: z.boolean({ invalid_type_error: 'shuffleOptions must be a boolean.' }).default(true),
+  sections: z.array(sectionWrite).default([])
+});
+
+const testCreateSchema = z.object({
+  title: requiredString(TITLE_REQUIRED),
+  description: z.string().optional(),
+  defaultNegativeMarks: z.number().default(0).refine((v) => v >= 0, 'Default negative marks must be zero or greater.')
+});
+
+// ---- Serialization (contract JSON): stringified _ids, optional fields omitted ----
+
+type OptionJson = { id: string; order: number; text?: string; imageUrl?: string; isCorrect: boolean };
+type QuestionJson = {
+  id: string;
+  type: 'SINGLE' | 'MULTI';
+  order: number;
+  text?: string;
+  imageUrl?: string;
+  marks: number;
+  negativeMarks?: number;
+  explanation?: string;
+  options: OptionJson[];
+};
+type SectionJson = {
+  id: string;
+  title: string;
+  order: number;
+  durationSec: number;
+  negativeMarksOverride?: number;
+  questions: QuestionJson[];
+};
+type TestJson = {
+  id: string;
+  title: string;
+  description?: string;
+  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  defaultNegativeMarks: number;
+  shuffleQuestions: boolean;
+  shuffleOptions: boolean;
+  sections: SectionJson[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serializeTest(test: any): TestJson {
+  return {
+    id: String(test._id),
+    title: test.title,
+    description: test.description ?? undefined,
+    status: test.status,
+    defaultNegativeMarks: test.defaultNegativeMarks,
+    shuffleQuestions: test.shuffleQuestions === true,
+    shuffleOptions: test.shuffleOptions === true,
+    sections: test.sections.map((s: any) => ({
+      id: String(s._id),
+      title: s.title,
+      order: s.order,
+      durationSec: s.durationSec,
+      negativeMarksOverride: s.negativeMarksOverride ?? undefined,
+      questions: s.questions.map((q: any) => ({
+        id: String(q._id),
+        type: q.type,
+        order: q.order,
+        text: q.text ?? undefined,
+        imageUrl: q.imageUrl ?? undefined,
+        marks: q.marks,
+        negativeMarks: q.negativeMarks ?? undefined,
+        explanation: q.explanation ?? undefined,
+        options: q.options.map((o: any) => ({
+          id: String(o._id),
+          order: o.order,
+          text: o.text ?? undefined,
+          imageUrl: o.imageUrl ?? undefined,
+          isCorrect: o.isCorrect === true
+        }))
+      }))
+    })),
+    createdAt: test.createdAt.toISOString(),
+    updatedAt: test.updatedAt.toISOString()
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toSummary(test: any): object {
+  const sections = test.sections ?? [];
+  const questionCount = sections.reduce((n: number, s: any) => n + (s.questions?.length ?? 0), 0);
+  const totalDurationSec = sections.reduce((n: number, s: any) => n + (s.durationSec ?? 0), 0);
+  const totalMarks = sections.reduce(
+    (n: number, s: any) => n + (s.questions ?? []).reduce((m: number, q: any) => m + (q.marks ?? 0), 0),
+    0
+  );
+  return {
+    id: String(test._id),
+    title: test.title,
+    status: test.status,
+    defaultNegativeMarks: test.defaultNegativeMarks,
+    sectionCount: sections.length,
+    questionCount,
+    totalDurationSec,
+    totalMarks,
+    updatedAt: test.updatedAt.toISOString()
+  };
+}
+
+// ---- Helpers ----
+
+type AsyncHandler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
+function asyncHandler(fn: AsyncHandler) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    void fn(req, res, next).catch(next);
+  };
+}
+
+async function findTest(id: string) {
+  const test = await Test.findOne({ _id: id, deletedAt: null });
+  if (!test) throw new AppError(404, 'NOT_FOUND', 'Test not found.');
+  return test;
+}
+
+async function assertNotFrozen(testId: unknown): Promise<void> {
+  const frozen = await TestAttempt.exists({ testId });
+  if (frozen) {
+    throw new AppError(409, 'TEST_FROZEN', 'This test is frozen because a student has started it.');
+  }
+}
+
+// ---- Uploads ----
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES }
+});
+
+const IMAGE_TYPES: Record<string, { mime: string; ext: string }> = {
+  png: { mime: 'image/png', ext: '.png' },
+  jpeg: { mime: 'image/jpeg', ext: '.jpg' },
+  gif: { mime: 'image/gif', ext: '.gif' },
+  webp: { mime: 'image/webp', ext: '.webp' }
+};
+
+/** Content sniffing by magic numbers — extension/MIME claims are never trusted. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sniffImageType(buf: Buffer): { mime: string; ext: string } | null {
+  const is = (offset: number, bytes: number[]) => {
+    if (buf.length < offset + bytes.length) return false;
+    return buf.subarray(offset, offset + bytes.length).equals(Buffer.from(bytes));
+  };
+  // PNG \x89PNG\r\n\x1a\n
+  if (is(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return IMAGE_TYPES.png;
+  // JPEG \xFF\xD8\xFF
+  if (is(0, [0xff, 0xd8, 0xff])) return IMAGE_TYPES.jpeg;
+  // GIF87a / GIF89a
+  if (is(0, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61]) || is(0, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])) return IMAGE_TYPES.gif;
+  // RIFF....WEBP within the first 12 bytes
+  if (is(0, [0x52, 0x49, 0x46, 0x46]) && is(8, [0x57, 0x45, 0x42, 0x50])) return IMAGE_TYPES.webp;
+  return null;
+}
+
+/** Wrapper translating multer errors into the uniform error shape. */
+function uploadSingle(field: string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    upload.single(field)(req, res, (err: unknown) => {
+      if (err instanceof multer.MulterError) {
+        const tooLarge = err.code === 'LIMIT_FILE_SIZE';
+        return next(
+          tooLarge
+            ? new AppError(400, 'UPLOAD_TOO_LARGE', 'Uploaded file is too large. Maximum size is 2MB.')
+            : new AppError(400, 'UPLOAD_INVALID', 'Upload failed. Use a single file in the "file" field.')
+        );
+      }
+      next(err);
+    });
+  };
+}
+
+// ---- Router ----
+
+export const adminRouter = Router();
+adminRouter.use(authenticate, requireRole('ADMIN'));
+
+adminRouter.get(
+  '/tests',
+  asyncHandler(async (_req, res) => {
+    const tests = await Test.find({ deletedAt: null }).sort({ updatedAt: -1 });
+    res.json({ tests: tests.map(toSummary) });
+  })
+);
+
+adminRouter.post(
+  '/tests',
+  asyncHandler(async (req, res) => {
+    const body = testCreateSchema.parse(req.body);
+    const test = await Test.create({
+      title: body.title,
+      description: body.description,
+      defaultNegativeMarks: body.defaultNegativeMarks
+    });
+    res.status(201).json(serializeTest(test));
+  })
+);
+
+adminRouter.get(
+  '/tests/:id',
+  asyncHandler(async (req, res) => {
+    const test = await findTest(req.params.id);
+    res.json(serializeTest(test));
+  })
+);
+
+adminRouter.put(
+  '/tests/:id',
+  asyncHandler(async (req, res) => {
+    const body = testWriteSchema.parse(req.body);
+    const test = await findTest(req.params.id);
+    await assertNotFrozen(test._id);
+
+    test.title = body.title;
+    test.description = body.description ?? null;
+    test.defaultNegativeMarks = body.defaultNegativeMarks;
+    test.shuffleQuestions = body.shuffleQuestions;
+    test.shuffleOptions = body.shuffleOptions;
+    // Whole-doc replace: fresh plain objects become brand-new subdocuments
+    // (new _ids). Never touch test.status.
+    test.sections = body.sections as unknown as TestDoc['sections'];
+    await test.save();
+    res.json(serializeTest(test));
+  })
+);
+
+adminRouter.delete(
+  '/tests/:id',
+  asyncHandler(async (req, res) => {
+    const test = await findTest(req.params.id);
+    await assertNotFrozen(test._id);
+    test.deletedAt = new Date();
+    await test.save();
+    res.status(204).end();
+  })
+);
+
+adminRouter.post(
+  '/tests/:id/publish',
+  asyncHandler(async (req, res) => {
+    const test = await findTest(req.params.id);
+    if (test.status === 'ARCHIVED') {
+      throw new AppError(409, 'STATUS_FROZEN', 'Archived tests cannot be published or unpublished.');
+    }
+    if (!test.sections.length) {
+      throw new AppError(400, 'NOT_PUBLISHABLE', 'A test needs at least one section before it can be published.');
+    }
+    const totalQuestions = test.sections.reduce((n, s) => n + (s.questions?.length ?? 0), 0);
+    if (totalQuestions < 1) {
+      throw new AppError(400, 'NOT_PUBLISHABLE', 'A test needs at least one question before it can be published.');
+    }
+    test.status = 'PUBLISHED';
+    await test.save();
+    res.json(serializeTest(test));
+  })
+);
+
+adminRouter.post(
+  '/tests/:id/unpublish',
+  asyncHandler(async (req, res) => {
+    const test = await findTest(req.params.id);
+    if (test.status === 'ARCHIVED') {
+      throw new AppError(409, 'STATUS_FROZEN', 'Archived tests cannot be published or unpublished.');
+    }
+    test.status = 'DRAFT';
+    await test.save();
+    res.json(serializeTest(test));
+  })
+);
+
+adminRouter.post(
+  '/uploads',
+  uploadSingle('file'),
+  asyncHandler(async (req, res) => {
+    const file = req.file;
+    if (!file) throw new AppError(400, 'UPLOAD_REQUIRED', 'No file uploaded. Use the "file" multipart field.');
+
+    const type = sniffImageType(file.buffer);
+    if (!type) {
+      throw new AppError(400, 'UPLOAD_INVALID_TYPE', 'Unsupported image type. Allowed: PNG, JPEG, GIF, WebP.');
+    }
+
+    const name = `${randomUUID()}${type.ext}`;
+    await writeFile(resolve(uploadDir, name), file.buffer);
+    res.status(201).json({ url: `/uploads/${name}` });
+  })
+);
