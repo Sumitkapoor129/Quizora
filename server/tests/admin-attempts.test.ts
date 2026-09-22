@@ -489,14 +489,15 @@ describe('GET /api/admin/attempts/:attemptId', () => {
   it('serializes a TIMED_OUT attempt that was lazily expired by the server timer', async () => {
     const testId = await publishTest('Timed Out', [
       { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'q?', 2, [opt(0, 'a', true), opt(1, 'b')])] }
-    ]);
+    ], { shuffleQuestions: false, shuffleOptions: false });
     const attemptId = await createAttempt(testId, studentCookie);
     const started = await startAttempt(attemptId, studentCookie);
     const q1 = started.attempt.sections[0].questions[0];
-    await request(app)
+    const put = await request(app)
       .put(`/api/student/attempts/${attemptId}/answers`)
       .set('Cookie', studentCookie)
       .send({ currentQuestionIndex: 0, answers: [{ questionId: q1.questionId, selectedOptionIds: [q1.options[0].optionId] }] });
+    expect(put.status).toBe(200);
 
     // Backdate the deadline well past the grace window, then trigger lazy expiry
     // through a stateful student read (the admin detail route never expires).
@@ -514,6 +515,7 @@ describe('GET /api/admin/attempts/:attemptId', () => {
     expect(attempt.correctCount).toBe(1);
     expect(typeof attempt.submittedAt).toBe('string');
     expect(attempt.questions[0]).toMatchObject({ isCorrect: true, marksAwarded: 2, isAttempted: true });
+    expect(attempt.questions[0].selectedOptionIds).toEqual([q1.options[0].optionId]);
   });
 
   it('keeps the SEALED blueprint option order + answer key when the test shuffles options', async () => {
