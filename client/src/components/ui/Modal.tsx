@@ -9,9 +9,11 @@ export interface ModalProps {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** aria-labelledby / heading id. Pass a distinct id when two modals can be mounted together. */
+  id?: string;
 }
 
-export function Modal({ open, onClose, title, children, footer }: ModalProps) {
+export function Modal({ open, onClose, title, children, footer, id = 'modal-title' }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -63,11 +65,11 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={id}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="modal__header">
-          <h2 id="modal-title" className="modal__title">
+          <h2 id={id} className="modal__title">
             {title}
           </h2>
           <button

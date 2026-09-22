@@ -29,9 +29,29 @@ export const answerSchema = new Schema(
     questionId: { type: Schema.Types.ObjectId, required: true },
     selectedOptionIds: [{ type: Schema.Types.ObjectId }],
     isAttempted: { type: Boolean, default: false },
+    isMarked: { type: Boolean, default: false },
     isCorrect: { type: Boolean },
     marksAwarded: { type: Number },
     updatedAt: { type: Date, default: Date.now }
+  },
+  { _id: false }
+);
+
+/**
+ * Frozen, per-student view of the test captured at START: the presented
+ * question/option order plus everything needed to score offline at submit.
+ * Scoring NEVER re-reads the Test — the blueprint is the source of truth.
+ */
+export const blueprintEntrySchema = new Schema(
+  {
+    questionId: { type: Schema.Types.ObjectId, required: true },
+    sectionIndex: { type: Number, required: true },
+    sectionId: { type: Schema.Types.ObjectId, required: true },
+    type: { type: String, enum: ['SINGLE', 'MULTI'], required: true },
+    marks: { type: Number, required: true },
+    negativeMarks: { type: Number, required: true },
+    correctOptionIds: [{ type: Schema.Types.ObjectId }],
+    optionIds: [{ type: Schema.Types.ObjectId }]
   },
   { _id: false }
 );
@@ -42,6 +62,7 @@ export const sectionAttemptSchema = new Schema(
     title: { type: String },
     endAt: { type: Date },
     score: { type: Number },
+    maxScore: { type: Number },
     correctCount: { type: Number },
     submittedAt: { type: Date }
   },
@@ -53,13 +74,16 @@ export const testAttemptSchema = new Schema({
   studentId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   status: { type: String, enum: ['GATED', 'IN_PROGRESS', 'SUBMITTED', 'TIMED_OUT'], default: 'GATED' },
   startedAt: { type: Date },
+  endAt: { type: Date },
   submittedAt: { type: Date },
+  currentQuestionIndex: { type: Number, default: 0 },
   warningCount: { type: Number, default: 0 },
   score: { type: Number },
   maxScore: { type: Number },
   correctCount: { type: Number },
   totalQuestions: { type: Number },
   voided: { type: Boolean, default: false },
+  blueprint: [blueprintEntrySchema],
   sectionAttempts: [sectionAttemptSchema],
   answers: [answerSchema],
   events: [attemptEventSchema]
