@@ -304,3 +304,66 @@ export interface AttemptResultData {
 export interface AttemptResultResponse {
   attempt: AttemptResultData;
 }
+
+/* ---------- Admin attempts review ---------- */
+
+export interface AdminAttemptStudent {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface AdminAttemptListItem {
+  id: string;
+  testId: string;
+  testTitle: string;
+  student: AdminAttemptStudent;
+  status: AttemptStatus;
+  score: number;
+  maxScore: number;
+  correctCount: number;
+  totalQuestions: number;
+  warningCount: number;
+  startedAt: string | null;
+  submittedAt: string | null;
+}
+
+export interface AdminAttemptOption {
+  optionId: string;
+  text?: string;
+  imageUrl?: string;
+  isCorrect: boolean;
+  selected: boolean;
+}
+
+export interface AdminAttemptQuestion {
+  questionId: string;
+  questionIndex: number;
+  sectionIndex: number;
+  type: QuestionType;
+  text?: string;
+  imageUrl?: string;
+  explanation?: string;
+  marks: number;
+  negativeMarks: number;
+  options: AdminAttemptOption[];
+  selectedOptionIds: string[];
+  isCorrect: boolean;
+  marksAwarded: number;
+  isAttempted: boolean;
+}
+
+export interface AdminAttemptDetail extends AdminAttemptListItem {
+  endAt: string | null;
+  sections: ResultSection[];
+  questions: AdminAttemptQuestion[];
+  events: StudentAttemptEvent[];
+}
+
+export interface AdminAttemptListResponse {
+  attempts: AdminAttemptListItem[];
+}
+
+export interface AdminAttemptDetailResponse {
+  attempt: AdminAttemptDetail;
+}
