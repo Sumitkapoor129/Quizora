@@ -1310,6 +1310,29 @@ textarea.field__input {
   color: var(--danger);
 }
 
+.exam-warnings {
+  padding: 2px 8px;
+  border: 1px solid #7a4a0d;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: #7a4a0d;
+  background: #f7efe0;
+  white-space: nowrap;
+}
+
+/* Reserves the header slot so a warning never shifts the layout mid-exam. */
+.exam-warnings--hidden {
+  visibility: hidden;
+}
+
+.exam-notice {
+  margin: var(--space-4) var(--space-5) 0;
+  background: #f7efe0;
+  border-color: rgba(122, 74, 13, 0.35);
+  color: #7a4a0d;
+}
+
 .exam-clock {
   font-family: var(--font-mono);
   font-size: var(--text-lg);

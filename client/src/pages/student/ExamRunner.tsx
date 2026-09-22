@@ -8,13 +8,30 @@ import { Card } from '@/components/ui/Card';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { Modal } from '@/components/ui/Modal';
 import { Spinner } from '@/components/ui/Spinner';
-import type { SaveAnswersBody, StudentAttempt, StudentQuestion, StudentSection } from '@/types';
+import type { AntiCheatEventType, SaveAnswersBody, StudentAttempt, StudentQuestion, StudentSection } from '@/types';
 
 type FlushResult = 'ok' | 'terminal' | 'error';
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const SAVE_DEBOUNCE_MS = 800;
 const SAVE_RETRY_BASE_MS = 1000;
+const MAX_WARNINGS = 3;
+/** Coalesces blur + visibility into one violation per tab/window switch. */
+const FOCUS_AWAY_COALESCE_MS = 1000;
+/** Coalesces repeated copy/cut/paste/right-click into one violation per window. */
+const CLIPBOARD_COALESCE_MS = 1000;
+/** How long the inline (non-blocking) violation notice stays visible. */
+const NOTICE_DURATION_MS = 4000;
+/**
+ * Violations that require the student to re-engage with the exam get a
+ * blocking modal; already-suppressed input (copy/paste/right-click) gets a
+ * lighter inline notice so an accidental right-click doesn't stop the clock.
+ */
+const BLOCKING_VIOLATIONS: ReadonlySet<AntiCheatEventType> = new Set([
+  'FULLSCREEN_EXIT',
+  'VISIBILITY_HIDDEN',
+  'FOCUS_LOST',
+]);
 
 interface FlatQuestion {
   question: StudentQuestion;
@@ -40,6 +57,26 @@ function formatClock(ms: number): string {
   const ss = String(seconds).padStart(2, '0');
   return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
 }
+
+function enterFullscreen(): void {
+  const el = document.documentElement;
+  if (typeof el.requestFullscreen === 'function') {
+    void el.requestFullscreen().catch(() => {
+      // Best effort: the exam still runs when fullscreen is unavailable.
+    });
+  }
+}
+
+const WARNING_MESSAGES: Record<AntiCheatEventType, string> = {
+  FULLSCREEN_EXIT: 'You left fullscreen mode.',
+  COPY: 'Copying is not allowed during the exam.',
+  PASTE: 'Pasting is not allowed during the exam.',
+  CUT: 'Cutting text is not allowed during the exam.',
+  CONTEXT_MENU: 'Right-click is disabled during the exam.',
+  VISIBILITY_HIDDEN: 'You switched away from the exam window.',
+  FOCUS_LOST: 'The exam window lost focus.',
+  NETWORK_RECONNECT: '',
+};
 
 function useCountdown(endAt: string | undefined): { remainingMs: number | null; expired: boolean } {
   const [now, setNow] = useState(() => Date.now());
@@ -130,8 +167,18 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [terminal, setTerminal] = useState(false);
   const [timeExpired, setTimeExpired] = useState(false);
+  const [warningCount, setWarningCount] = useState(attempt.warningCount ?? 0);
+  const [warning, setWarning] = useState<{ count: number; type: AntiCheatEventType } | null>(null);
+  const [notice, setNotice] = useState<{ count: number; text: string } | null>(null);
+  const [autoSubmitted, setAutoSubmitted] = useState(false);
 
   const submittedRef = useRef(false);
+  const lastFocusAwayRef = useRef(0);
+  const lastEventRef = useRef<Partial<Record<AntiCheatEventType, number>>>({});
+  const wasFullscreenRef = useRef(false);
+  const hadWarningRef = useRef(false);
+  const eventChainRef = useRef<Promise<void>>(Promise.resolve());
+  const noticeTimerRef = useRef<number | null>(null);
   const questionRef = useRef<HTMLElement>(null);
   const pendingPayloadRef = useRef<SaveAnswersBody | null>(null);
   const flushTimerRef = useRef<number | null>(null);
@@ -267,6 +314,142 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
     }
   }, [attemptId, flush]);
 
+  /**
+   * Anti-cheat: serializes the event POSTs (a single chain, like `flush`) so
+   * rapid violations can't race the server's read-modify-save and drop counts.
+   * Local answers are flushed before each POST so a 3rd-strike auto-submit
+   * scores the latest snapshot — never hand the server a stale one.
+   */
+  const reportViolation = useCallback(
+    (type: AntiCheatEventType): void => {
+      if (submittedRef.current) return;
+      eventChainRef.current = eventChainRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          if (submittedRef.current) return;
+          const flushResult = await flush();
+          if (flushResult === 'terminal' || submittedRef.current) return;
+          let res;
+          try {
+            res = await api.student.postEvent(attemptId, { type });
+          } catch (err) {
+            if (submittedRef.current) return;
+            if (err instanceof ApiError && (err.code === 'NOT_IN_PROGRESS' || err.code === 'NOT_STARTED')) {
+              submittedRef.current = true;
+              setTerminal(true);
+            }
+            return; // Connection failure: the exam keeps running; the server stays authoritative.
+          }
+          setWarningCount((prev) => Math.max(prev, res.warningCount));
+          if (res.submitted) {
+            submittedRef.current = true;
+            setAutoSubmitted(true);
+            return;
+          }
+          if (BLOCKING_VIOLATIONS.has(type)) {
+            setWarning({ count: res.warningCount, type });
+          } else {
+            setNotice({ count: res.warningCount, text: WARNING_MESSAGES[type] });
+          }
+        });
+    },
+    [attemptId, flush],
+  );
+
+  useEffect(() => {
+    const reportFocusAway = (type: AntiCheatEventType) => {
+      const now = Date.now();
+      if (now - lastFocusAwayRef.current < FOCUS_AWAY_COALESCE_MS) return;
+      lastFocusAwayRef.current = now;
+      reportViolation(type);
+    };
+
+    const reportCoalesced = (type: AntiCheatEventType) => {
+      const now = Date.now();
+      if (now - (lastEventRef.current[type] ?? 0) < CLIPBOARD_COALESCE_MS) return;
+      lastEventRef.current[type] = now;
+      reportViolation(type);
+    };
+
+    function onFullscreenChange() {
+      if (document.fullscreenElement) {
+        wasFullscreenRef.current = true;
+        return;
+      }
+      if (wasFullscreenRef.current) {
+        wasFullscreenRef.current = false;
+        reportViolation('FULLSCREEN_EXIT');
+      }
+    }
+
+    function onVisibilityChange() {
+      if (!document.hidden) return;
+      reportFocusAway('VISIBILITY_HIDDEN');
+    }
+
+    function onWindowBlur() {
+      reportFocusAway('FOCUS_LOST');
+    }
+
+    const onCopy = (e: Event) => {
+      e.preventDefault();
+      reportCoalesced('COPY');
+    };
+    const onCut = (e: Event) => {
+      e.preventDefault();
+      reportCoalesced('CUT');
+    };
+    const onPaste = (e: Event) => {
+      e.preventDefault();
+      reportCoalesced('PASTE');
+    };
+    const onContextMenu = (e: Event) => {
+      e.preventDefault();
+      reportCoalesced('CONTEXT_MENU');
+    };
+
+    wasFullscreenRef.current = Boolean(document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('blur', onWindowBlur);
+    document.addEventListener('copy', onCopy);
+    document.addEventListener('cut', onCut);
+    document.addEventListener('paste', onPaste);
+    document.addEventListener('contextmenu', onContextMenu);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('blur', onWindowBlur);
+      document.removeEventListener('copy', onCopy);
+      document.removeEventListener('cut', onCut);
+      document.removeEventListener('paste', onPaste);
+      document.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, [reportViolation]);
+
+  useEffect(() => {
+    if (warning) {
+      hadWarningRef.current = true;
+      return;
+    }
+    if (hadWarningRef.current) {
+      hadWarningRef.current = false;
+      questionRef.current?.focus();
+    }
+  }, [warning]);
+
+  useEffect(() => {
+    if (!notice) return;
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), NOTICE_DURATION_MS);
+    return () => {
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+        noticeTimerRef.current = null;
+      }
+    };
+  }, [notice]);
+
   useEffect(() => {
     if (!timeExpired || submittedRef.current || confirmOpen || confirmSubmitting) return;
     void (async () => {
@@ -385,6 +568,12 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
                     ? 'Save failed'
                     : ''}
           </span>
+          <span
+            className={`exam-warnings${warningCount > 0 ? '' : ' exam-warnings--hidden'}`}
+            role="status"
+          >
+            {warningCount}/{MAX_WARNINGS} warnings
+          </span>
           <div
             className={`exam-clock${remainingMs !== null && remainingMs < 60_000 ? ' exam-clock--danger' : ''}`}
             aria-label="Time remaining"
@@ -401,6 +590,14 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
       {offline && (
         <div className="banner exam-offline" role="status">
           <p className="banner__text">Connection lost — reconnecting… Your answers are saved on this device.</p>
+        </div>
+      )}
+
+      {notice && (
+        <div className="banner exam-notice" role="status">
+          <p className="banner__text">
+            Warning {notice.count} of {MAX_WARNINGS}: {notice.text}
+          </p>
         </div>
       )}
 
@@ -542,6 +739,47 @@ function Exam({ attempt, attemptId, testId }: { attempt: StudentAttempt; attempt
           </Button>
         </div>
       </Modal>
+
+      <Modal
+        open={warning !== null && !autoSubmitted}
+        onClose={() => setWarning(null)}
+        title={warning ? `Warning ${warning.count} of ${MAX_WARNINGS}` : 'Warning'}
+        id="exam-warning-modal"
+      >
+        {warning && (
+          <>
+            <p>{WARNING_MESSAGES[warning.type]}</p>
+            <p>{MAX_WARNINGS} violations auto-submit your exam.</p>
+            {warning.type === 'FULLSCREEN_EXIT' && <p>Return to fullscreen to continue.</p>}
+            <div className="modal__footer">
+              {warning.type === 'FULLSCREEN_EXIT' && (
+                <Button variant="secondary" onClick={enterFullscreen}>
+                  Return to fullscreen
+                </Button>
+              )}
+              <Button onClick={() => setWarning(null)}>Continue exam</Button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      <Modal
+        open={autoSubmitted}
+        onClose={() => navigate(resultRoute, { replace: true })}
+        title="Exam auto-submitted"
+        id="exam-autosubmit-modal"
+      >
+        <p>
+          You reached {MAX_WARNINGS} violations, so your exam was automatically submitted. You can now view
+          your result.
+        </p>
+        <div className="modal__footer">
+          <Button variant="ghost" onClick={() => navigate('/student', { replace: true })}>
+            Back to tests
+          </Button>
+          <Button onClick={() => navigate(resultRoute, { replace: true })}>View result</Button>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -554,6 +792,9 @@ export default function ExamRunner() {
     queryKey: ['student', 'attempt', attemptId],
     queryFn: () => api.student.attempt(attemptId),
     retry: false,
+    // The exam snapshot is static once started; refetching on every
+    // alt-tab return (which Phase 6 anti-cheat makes frequent) is pure waste.
+    refetchOnWindowFocus: false,
   });
 
   const status = attemptQuery.data?.attempt.status;
