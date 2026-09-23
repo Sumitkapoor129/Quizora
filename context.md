@@ -1,4 +1,4 @@
-# ExamPro — Build Context / Resume File
+start wh# ExamPro — Build Context / Resume File
 
 > Written to allow a fresh session to resume tomorrow. Read this first, then
 > the AGENTS.md workflow in the repo root. Status reflects the last verified
@@ -14,6 +14,12 @@ students take them with server-authoritative timing, fullscreen anti-cheating
 server-side scoring. Detailed admin results/analytics, simple student results.
 Roles: ADMIN, STUDENT. RBAC enforced server-side.
 
+Two follow-on features (Phases 10–11, appended after the planned phases): (f1) admin
+publishes study resources — PDF/zip/image shared via external **Drive links**, shown to
+students as preview cards with title + short description; (f2) students get a **sidebar** portal
+— Dashboard (insights/analytics + recently added tests & resources), Profile, My Tests,
+Tests, Resources.
+
 ## 2. Stack (LOCKED — do not revisit unless user changes their mind)
 
 - **Repo:** `C:\Users\91983\Desktop\VibeCoded\forms` (greenfield; `main` branch, **Phases 1–6 merged** — commit anchors in §7. No open feature branches; work is committed and merged after every phase).
@@ -22,7 +28,7 @@ Roles: ADMIN, STUDENT. RBAC enforced server-side.
 - **No Docker, no Redis, no queues.** MongoDB is NOT installed locally (attempted install failed; only leftover `data/`/`log/` dirs) — run against the user's remote URI.
 - **Machine facts:** Windows, Node v24.19.0, npm 11, PostgreSQL running on port 3008 (credentials unknown — **not used**, user chose MongoDB), Docker daemon down.
 
-## 3. Database design (Mongoose, 4 collections — embedded, no relations/transactions)
+## 3. Database design (Mongoose, 5 collections — embedded, no relations/transactions)
 
 Single-doc = whole entity. No multi-doc transactions needed: critical paths use
 single-document atomic compare-and-set (`findOneAndUpdate` with status filter).
@@ -31,6 +37,7 @@ single-document atomic compare-and-set (`findOneAndUpdate` with status filter).
 - **`RefreshSession`** — userId, tokenHash (unique), previousTokenHash (replay detection), expiresAt, revokedAt.
 - **`Test`** — status `DRAFT|PUBLISHED|ARCHIVED`, defaultNegativeMarks, deletedAt, embedded `sections[]` → each `{title, order, durationSec, negativeMarksOverride?, questions[]}` → each question `{type SINGLE|MULTI, order, text?, imageUrl?, marks, negativeMarks?, explanation?, options[]}` → option `{order, text?, imageUrl?, isCorrect}`.
 - **`TestAttempt`** — status `GATED|IN_PROGRESS|SUBMITTED|TIMED_OUT`, warningCount, score fields, voided, embedded `sectionAttempts[]` (per-section `endAt` — server-set cumulative time windows), `answers[]` (questionId + selectedOptionIds), `events[]` (typed, capped, `FULLSCREEN_EXIT|COPY|PASTE|CUT|CONTEXT_MENU|VISIBILITY_HIDDEN|FOCUS_LOST|NETWORK_RECONNECT|START|SUBMIT`). Unique index `{testId, studentId}` = one attempt per student per test.
+- **`Resource`** — study material (Phase 10): `title` (req), `description` (short, opt), `kind` enum `PDF|ZIP|IMAGE|OTHER`, `driveUrl` (req, external link e.g. Google Drive share), `createdBy` (User ref). Ordering by `_id` desc (newest-first); no `createdAt` — same `_id`-ordering convention as TestAttempt/admin lists. No publish/status field yet — created = visible (add if gating is ever needed).
 
 **Key integrity rules (baked into design, enforce in later phases):**
 - Write-gate: every mutating exam op = atomic CAS (lock/claim via status filter) requiring `IN_PROGRESS` + deadline (now ≤ section `endAt`).
@@ -42,8 +49,8 @@ single-document atomic compare-and-set (`findOneAndUpdate` with status filter).
 ## 4. API surface (defined; build per phase)
 
 - Auth: `POST /api/auth/register|login|refresh|logout`, `GET /api/auth/me`.
-- Admin: `/api/admin/tests` (+`:id`, sections, questions, reorder, publish/unpublish, image upload), `/api/admin/import/validate|confirm`, `/api/admin/attempts[:id]`, `/api/admin/students`, `/api/admin/tests/:id/analytics`.
-- Student: `GET /api/student/tests`, `POST /api/student/tests/:id/attempts`, `POST /api/student/attempts/:id/start`, `GET /api/student/attempts/:id`, `PUT /api/student/attempts/:id/answers`, `POST /api/student/attempts/:id/events`, `POST /api/student/attempts/:id/submit`, `GET /api/student/attempts/:id/result`.
+- Admin: `/api/admin/tests` (+`:id`, sections, questions, reorder, publish/unpublish, image upload), `/api/admin/import/validate|confirm`, `/api/admin/attempts[:id]`, `/api/admin/students`, `/api/admin/tests/:id/analytics`, /api/admin/resources (+ POST list, `DELETE /:id`).
+- Student: `GET /api/student/tests`, `POST /api/student/tests/:id/attempts`, `POST /api/student/attempts/:id/start`, `GET /api/student/attempts/:id`, `PUT /api/student/attempts/:id/answers`, `POST /api/student/attempts/:id/events`, `POST /api/student/attempts/:id/submit`, `GET /api/student/attempts/:id/result`, `GET /api/student/attempts` (my history list), `PATCH /api/student/profile` (name / password), `GET /api/student/resources`.
 - Error shape everywhere: `{ error: { code, message, details? } }`. Codes: `UNAUTHENTICATED` (401), `FORBIDDEN` (403), zod→400 with flat `details` `[{field,message}]`. IDOR → 404 (not 403).
 
 ## 5. Phase 1 progress (foundation)
@@ -127,6 +134,17 @@ implemented values. No code change was required.
    - **Deferred (logged, MINOR):** admin attempts list has no cursor pagination beyond the 200 cap; `?testId=` filter not yet wired to any page; `/student/results` "My Results" page still the Phase 3 placeholder (dashboard cards already deep-link per-test); `TestAttempt` lacks top-level `createdAt` timestamps (list sorted by `_id`); admin routes still untested for rate-limit (Phase 9 hardening list).
 8. **Phase 8 — Analytics (NEXT — start here):** admin aggregates (avg/highest/lowest, distribution, per-question difficulty, violation stats). Reuse Phase 7: `AdminAttemptDetail` exposes per-question marks + blueprint answer key + events, so difficulty/violation stats derive from `GET /api/admin/attempts` data without new storage. `admin/analytics` route + admin dashboard stats are still Placeholder.
 9. **Phase 9 — Final audit:** @review + @tester, full verify, Playwright E2E (also via mongodb-memory-server), README/env docs. Standing hardening list: uploads GC, import size limits, rate-limit/pagination on admin routes, `testId`/list cursor pagination, `/student/results` page.
+10. **Phase 10 — Study Resources (NEW, after planned phases — f1):**
+    - **Server** `server/src/models/Resource.ts` — schema above (§3). Admin routes in `src/routes/admin.ts`: `POST /api/admin/resources` (zod: `title` req 1–120, `description` opt ≤500, `kind` enum PDF|ZIP|IMAGE|OTHER, `driveUrl` req valid http(s) URL; 400 → flat details; 201 → serialized doc), `GET /api/admin/resources` (management list, `_id` desc), `DELETE /admin/resources/:id` (404 on missing). Student route in `src/routes/student.ts`: `GET /api/student/resources` (any authenticated student; newest-first `_id` desc; DTO `{id,title,description,kind,driveUrl}`). Both behind existing `authenticate` + `requireRole`.
+    - **Client:** admin — `pages/admin/resources/ResourceList.tsx` (table/card list: title, kind Badge, short description, drive link, delete w/ confirm Modal) + "Add resource" Modal reusing `Field`/`TextareaField`/`SelectField`/`Modal` (title, description, kind, driveUrl). Wire into `ADMIN_NAV` (AppLayout) + `routes/index.tsx` `/admin/resources`. Student — `pages/student/Resources.tsx`: preview cards (title, small description, kind badge, "Open" external link `target="_blank"` `rel="noopener noreferrer"`, drive links are external — server/client both treat URL as untrusted string, open in new tab). `api/admin/resources.*` + `api/student.resources()` in `api/client.ts`, types in `types/index.ts`, `utils/resourceKind.ts` label/variant map.
+    - **Tests:** server `tests/resources.test.ts` (~8): admin create→list newest-first, RBAC 403 (student→admin), zod 400 (empty title, bad kind, non-URL driveUrl), delete→404, student list. Client `ResourceList.test.tsx` + `Resources.test.tsx` (~6): admin add/delete flow, student preview render. Verify counts update; both `tsc` builds clean.
+    - **Deferred (planned):** no edit endpoint yet (delete+re-add covers typos) `ponytail:`; no status/pin/publish-gating — revisit if admins need to stage before publishing.
+11. **Phase 11 — Student Portal (NEW, after planned phases — f2):**
+    - **Sidebar for students:** `AppLayout.tsx` is currently `isAdmin`-gated (students get horizontal `nav-row`, no hamburger/drawer). Generalize: give students the same sidebar/drawer pattern (hamburger + `aside.sidebar` + Escape/trap/focus-return, already built + hardened for admin). New `STUDENT_NAV`: **Dashboard** `/student` (end), **Profile** `/student/profile`, **My Tests** `/student/results` (end:false), **Tests** `/student/tests` (end:false), **Resources** `/student/resources`. Note: `/student/tests` list page must not collide with the shell-free exam routes `/student/tests/:testId/...` — protected-exam routes stay `ProtectedExamRoute` and live in the same tree; React Router rank handles `/student/tests` (index) vs `/student/tests/:testId/...` natively, verify in tests.
+    - **Server:** `GET /api/student/attempts` in `src/routes/student.ts` — student's own attempts newest-first (reuse admin-attempts list pattern: `_id` desc, cap 200 `ponytail:` no cursor yet), DTO `{attemptId, testId, testTitle, status, marksEarned, totalMarks, percent, endedAt/_id}`; drive dashboard stats. `PATCH /api/student/profile` — password change requires current password (argon2 verify, 400 `INVALID_CREDENTIALS` on mismatch) + optional name change; returns fresh `/auth/me` DTO; keep refresh sessions (a password change does not nuke logins `ponytail:` hard-revoke later if required).
+    - **Client:** `pages/student/Dashboard.tsx` rewrite — insights/analytics strip (tests available, tests taken, avg score % from attempts, resume-in-progress) built from parallel react-query calls (`api.student.tests()`, `api.student.attempts()`, `api.student.resources()`) + two "Recently added" sections: recent tests (top 3 by list order) and recent resources (top 3 newest-first) each as cards linking into Tests / Resources. `pages/student/{Profile,MyTests,Tests,Resources}.tsx`: Profile = name + password-change form (`Profile.test.tsx`); MyTests = reuse student `Result` pattern — attempt rows w/ status Badge + percent + link to result (`MyTests.test.tsx`); Tests = extract the existing test-card grid out of today's Dashboard into its own page (`TestsList` reuse of `StudentTestListItem` + `attemptAction`); Resources (from Phase 10). Dashboard tests updated — existing `Dashboard.test.tsx` + `routes.test.tsx` grow for the new 5-item nav.
+    - **Tests:** server `tests/student-attempts.test.ts` (~6: own-only scoping/IDOR, newest-first, cap, profile patch happy+wrong-password+bad-body). Client +~12 across Dashboard/Profile/MyTests/Tests/routes. Verify counts update; both `tsc` builds clean; bundle delta low (no new deps — reuse existing primitives).
+    - **Deferred (logged for Phase 9 / follow-up):** admin analytics still untouched by this phase; student dashboard "avg score" = simple mean of attempt percents (no weighting).
 
 ## 8. How to run (as of this state)
 
