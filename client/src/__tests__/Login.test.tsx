@@ -16,7 +16,7 @@ function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue 
     status: 'anonymous',
     expired: false,
     login: vi.fn(),
-    register: vi.fn(),
+    verifyRegister: vi.fn(),
     logout: vi.fn(),
     ...overrides,
   };
@@ -34,6 +34,7 @@ function renderLogin(overrides: Partial<AuthContextValue> = {}, initialEntry = '
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<h1>Create your account</h1>} />
+          <Route path="/forgot-password" element={<h1>Forgot password</h1>} />
           <Route path="/student" element={<h1>Student home</h1>} />
           <Route path="/student/results" element={<h1>My results</h1>} />
           <Route path="/admin" element={<h1>Admin home</h1>} />
@@ -89,5 +90,14 @@ describe('Login', () => {
     await user.click(screen.getByRole('button', { name: /sign in/i }));
 
     expect(await screen.findByRole('heading', { name: 'My results' })).toBeInTheDocument();
+  });
+
+  it('links to the forgot-password page', async () => {
+    renderLogin();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('link', { name: 'Forgot password?' }));
+
+    expect(await screen.findByRole('heading', { name: 'Forgot password' })).toBeInTheDocument();
   });
 });

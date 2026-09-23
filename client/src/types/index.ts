@@ -14,6 +14,12 @@ export interface SessionResponse {
   sessionExpiresAt: string;
 }
 
+/** Response of the OTP-sending auth endpoints (register step 1 / forgot-password). */
+export interface OtpSentResponse {
+  email: string;
+  otpExpiresAt: string;
+}
+
 export type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 
 export interface ApiErrorBody {

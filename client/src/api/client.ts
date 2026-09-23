@@ -12,6 +12,7 @@ import type {
   CreateAttemptResponse,
   CreateResourceInput,
   ListTestsResponse,
+  OtpSentResponse,
   PostEventResponse,
   ProfileUpdateInput,
   ProfileUpdateResponse,
@@ -156,9 +157,17 @@ export const api = {
   auth: {
     login: (input: { email: string; password: string }) =>
       request<SessionResponse>('/api/auth/login', { method: 'POST', body: JSON.stringify(input) }, false).then(mapSession),
-    register: (input: { name: string; email: string; password: string }) =>
-      request<SessionResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) }, false).then(mapSession),
+    /** Registration step 1: validate + email a 6-digit OTP. No account yet. */
+    sendRegisterOtp: (input: { name: string; email: string; password: string }) =>
+      request<OtpSentResponse>('/api/auth/register', { method: 'POST', body: JSON.stringify(input) }, false),
+    /** Registration step 2: verify the code, create the account, get a session. */
+    verifyRegister: (input: { name: string; email: string; password: string; code: string }) =>
+      request<SessionResponse>('/api/auth/register/verify', { method: 'POST', body: JSON.stringify(input) }, false).then(mapSession),
     logout: () => request<void>('/api/auth/logout', { method: 'POST' }, false),
+    forgotPassword: (input: { email: string }) =>
+      request<OtpSentResponse>('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify(input) }, false),
+    resetPassword: (input: { email: string; code: string; newPassword: string }) =>
+      request<void>('/api/auth/reset-password', { method: 'POST', body: JSON.stringify(input) }, false),
     refresh: () => request<SessionResponse>('/api/auth/refresh', { method: 'POST' }, false).then(mapSession),
     me: () => request<SessionResponse>('/api/auth/me', {}).then(mapSession),
   },

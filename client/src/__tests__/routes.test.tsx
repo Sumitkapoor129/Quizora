@@ -18,7 +18,7 @@ function renderRouter(path: string, user: User | null) {
     status: user ? 'authenticated' : 'anonymous',
     expired: false,
     login: vi.fn(),
-    register: vi.fn(),
+    verifyRegister: vi.fn(),
     logout: vi.fn(),
   };
   render(
