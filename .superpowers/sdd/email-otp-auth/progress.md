@@ -12,3 +12,8 @@ Branch: feature/email-otp-auth
 
 ## Progress
 - Branch created from main. Dispatch pending.
+- `7b71af7` docs: spec + ledger committed.
+- `6ca9cb0` feat(server): mailer + EmailOtp model + OTP register/verify/forgot/reset routes + tests. Server 148 green (134 baseline + 14 new), typecheck + build clean.
+- `d121412` feat(client): two-step Register wizard, ForgotPassword + ResetPassword pages, login forgot link, api/auth context updates + tests. Client 126 green (110 baseline + 16 new), typecheck + build clean.
+- Task A report: `.superpowers/sdd/email-otp-auth/task-A-report.md`.
+- Next: review pass, then merge to main (per main flow: run both suites once more after any further changes).
