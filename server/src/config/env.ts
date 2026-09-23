@@ -23,7 +23,14 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   // Directory for admin-uploaded test images (relative to process cwd).
-  UPLOAD_DIR: z.string().default('uploads')
+  UPLOAD_DIR: z.string().default('uploads'),
+  // SMTP (email OTP delivery). All optional so the server boots and tests run
+  // before creds exist; the mailer falls back to a dev console log until then.
+  SMTP_HOST: z.string().default('smtp.gmail.com'),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  MAIL_FROM: z.string().optional()
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -73,5 +80,10 @@ export const env = {
   JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET ?? (isTest ? 'test-refresh-secret' : ''),
   CLIENT_ORIGIN: parsed.data.CLIENT_ORIGIN,
   COOKIE_SECURE: parsed.data.COOKIE_SECURE,
-  UPLOAD_DIR: parsed.data.UPLOAD_DIR
+  UPLOAD_DIR: parsed.data.UPLOAD_DIR,
+  SMTP_HOST: parsed.data.SMTP_HOST,
+  SMTP_PORT: parsed.data.SMTP_PORT,
+  SMTP_USER: parsed.data.SMTP_USER ?? '',
+  SMTP_PASS: parsed.data.SMTP_PASS ?? '',
+  MAIL_FROM: parsed.data.MAIL_FROM ?? ''
 } as const;

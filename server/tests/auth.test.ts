@@ -2,11 +2,15 @@ import { createHash } from 'node:crypto';
 import argon2 from 'argon2';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { connect, disconnect } from '../src/db/connect.js';
+import { EmailOtp } from '../src/models/EmailOtp.js';
 import { RefreshSession } from '../src/models/RefreshSession.js';
 import { User } from '../src/models/User.js';
+import { sendMail } from '../src/services/mailer.js';
+
+vi.mock('../src/services/mailer.js', () => ({ sendMail: vi.fn() }));
 
 const app = createApp();
 
@@ -17,7 +21,12 @@ beforeAll(async () => {
   await connect(mongo.getUri());
   await User.init();
   await RefreshSession.init();
+  await EmailOtp.init();
 }, 120_000);
+
+beforeEach(() => {
+  vi.mocked(sendMail).mockClear();
+});
 
 afterAll(async () => {
   await disconnect();
@@ -53,41 +62,57 @@ function expectAuthBody(body: unknown, email: string, name: string): void {
   expect(Date.parse(sessionExpiresAt)).toBeGreaterThan(Date.now());
 }
 
-describe('POST /api/auth/register', () => {
-  it('creates a STUDENT, sets auth cookies, and never leaks secrets', async () => {
+/** Extracts the 6-digit OTP the (mocked) mailer sent to `to`. */
+function otpCodeFromMail(to: string): string {
+  const call = vi.mocked(sendMail).mock.calls.find((c) => c[0].to === to);
+  expect(call, `expected a mail to ${to}`).toBeDefined();
+  const match = /(\d{6})/.exec(call![0].text);
+  expect(match, `expected a 6-digit code in mail to ${to}`).not.toBeNull();
+  return match![1];
+}
+
+/** Runs the full two-step registration for `email` (creates the account). */
+async function registerAndVerify(email: string, name: string): Promise<void> {
+  await request(app).post('/api/auth/register').send({ name, email, password: PASSWORD });
+  await request(app)
+    .post('/api/auth/register/verify')
+    .send({ name, email, password: PASSWORD, code: otpCodeFromMail(email) });
+}
+
+describe('POST /api/auth/register (step 1 — send OTP)', () => {
+  it('sends a 6-digit OTP and creates no account or session', async () => {
     const res = await request(app)
       .post('/api/auth/register')
       .send({ name: 'Alice', email: 'Alice@Example.com', password: PASSWORD });
 
     expect(res.status).toBe(201);
-    expectAuthBody(res.body, 'alice@example.com', 'Alice');
+    expect(res.body).toEqual({ email: 'alice@example.com', otpExpiresAt: expect.any(String) });
+    expect(Number.isNaN(Date.parse(res.body.otpExpiresAt))).toBe(false);
+    expect(Date.parse(res.body.otpExpiresAt)).toBeGreaterThan(Date.now());
+    expect(res.headers['set-cookie']).toBeUndefined();
+    expect(await User.exists({ email: 'alice@example.com' })).toBeNull();
 
-    const access = cookiePair(res, 'accessToken');
-    const refresh = cookiePair(res, 'refreshToken');
-    expect(access).toBeDefined();
-    expect(refresh).toBeDefined();
-    const setCookies = (res.headers['set-cookie'] ?? []) as unknown as string[];
-    expect(setCookies.every((c) => c.includes('HttpOnly'))).toBe(true);
-    expect(res.text).not.toContain('passwordHash');
+    // Only a SHA-256 hash of the code is persisted, never the code itself or
+    // the password — and neither leaves in the response body.
+    const code = otpCodeFromMail('alice@example.com');
+    expect(code).toMatch(/^\d{6}$/);
+    const otp = await EmailOtp.findOne({ email: 'alice@example.com', purpose: 'REGISTER' }).select('+codeHash');
+    expect(otp).not.toBeNull();
+    expect(otp!.codeHash).toBe(createHash('sha256').update(code).digest('hex'));
+    expect(res.text).not.toContain(code);
     expect(res.text).not.toContain(PASSWORD);
-    expect(res.body.user).not.toHaveProperty('isCorrect');
-
-    // Raw refresh token is never persisted; only its sha256 hash is.
-    const rawToken = refresh!.slice('refreshToken='.length);
-    const session = await RefreshSession.findOne({}).select('+tokenHash');
-    expect(session).not.toBeNull();
-    const expectedHash = createHash('sha256').update(rawToken).digest('hex');
-    expect(session!.tokenHash).toBe(expectedHash);
-    expect(session!.tokenHash).not.toBe(rawToken);
   });
 
-  it('ignores a client-supplied role', async () => {
-    const res = await request(app)
+  it('ignores a client-supplied role; the verified account is always a STUDENT', async () => {
+    const sent = await request(app)
       .post('/api/auth/register')
       .send({ name: 'Mallory', email: 'mallory@example.com', password: PASSWORD, role: 'ADMIN' });
+    expect(sent.status).toBe(201);
 
-    expect(res.status).toBe(201);
-    expect(res.body.user.role).toBe('STUDENT');
+    await request(app)
+      .post('/api/auth/register/verify')
+      .send({ name: 'Mallory', email: 'mallory@example.com', password: PASSWORD, code: otpCodeFromMail('mallory@example.com') });
+
     const stored = await User.findOne({ email: 'mallory@example.com' });
     expect(stored!.role).toBe('STUDENT');
   });
@@ -108,10 +133,22 @@ describe('POST /api/auth/register', () => {
     }
   });
 
-  it('rejects a duplicate email with 409 EMAIL_TAKEN', async () => {
+  it('rejects a malformed code field on register/verify with 400 VALIDATION_ERROR', async () => {
     await request(app)
       .post('/api/auth/register')
-      .send({ name: 'Dup One', email: 'dup@example.com', password: PASSWORD });
+      .send({ name: 'Malformed', email: 'malformed@example.com', password: PASSWORD });
+    const res = await request(app)
+      .post('/api/auth/register/verify')
+      .send({ name: 'Malformed', email: 'malformed@example.com', password: PASSWORD, code: '12ab' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.details).toContainEqual({ field: 'code', message: 'Enter the 6-digit code.' });
+  });
+
+  it('rejects a duplicate email with 409 EMAIL_TAKEN before sending an OTP', async () => {
+    await registerAndVerify('dup@example.com', 'Dup One');
+    vi.mocked(sendMail).mockClear();
     const res = await request(app)
       .post('/api/auth/register')
       .send({ name: 'Dup Two', email: 'dup@example.com', password: PASSWORD });
@@ -120,6 +157,7 @@ describe('POST /api/auth/register', () => {
     expect(res.body).toEqual({
       error: { code: 'EMAIL_TAKEN', message: 'An account with this email already exists.' }
     });
+    expect(sendMail).not.toHaveBeenCalledWith(expect.objectContaining({ to: 'dup@example.com' }));
   });
 });
 

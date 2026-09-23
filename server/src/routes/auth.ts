@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import argon2 from 'argon2';
 import { Router, type CookieOptions, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
@@ -7,8 +7,10 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
 import { authenticate } from '../middleware/auth.js';
+import { EmailOtp, type EmailOtpPurpose } from '../models/EmailOtp.js';
 import { RefreshSession } from '../models/RefreshSession.js';
 import { User } from '../models/User.js';
+import { sendMail } from '../services/mailer.js';
 
 const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -20,6 +22,13 @@ const NAME_REQUIRED = 'Name is required.';
 const EMAIL_REQUIRED = 'Email is required.';
 const EMAIL_INVALID = 'Enter a valid email address.';
 const PASSWORD_INVALID = 'Password must be at least 8 characters.';
+const CODE_INVALID = 'Enter the 6-digit code.';
+const OTP_INVALID_MESSAGE = 'Invalid verification code.';
+const OTP_EXPIRED_MESSAGE = 'This code has expired. Request a new one.';
+const OTP_ATTEMPTS_MESSAGE = 'Too many failed attempts. Request a new code.';
+
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_ATTEMPTS = 5;
 
 const emailField = z
   .string({ required_error: EMAIL_REQUIRED, invalid_type_error: EMAIL_REQUIRED })
@@ -40,6 +49,29 @@ const registerSchema = z.object({
     .min(1, NAME_REQUIRED),
   email: emailField,
   password: z
+    .string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID })
+    .min(8, PASSWORD_INVALID)
+});
+
+const codeField = z
+  .string({ required_error: CODE_INVALID, invalid_type_error: CODE_INVALID })
+  .regex(/^\d{6}$/, CODE_INVALID);
+
+const registerVerifySchema = z.object({
+  name: registerSchema.shape.name,
+  email: emailField,
+  password: registerSchema.shape.password,
+  code: codeField
+});
+
+const forgotPasswordSchema = z.object({
+  email: emailField
+});
+
+const resetPasswordSchema = z.object({
+  email: emailField,
+  code: codeField,
+  newPassword: z
     .string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID })
     .min(8, PASSWORD_INVALID)
 });
@@ -123,8 +155,51 @@ const limiterOptions = {
 
 // One limiter instance per route: sharing an instance would pool their budgets.
 const registerLimiter = rateLimit({ ...limiterOptions, limit: 10 });
+const registerVerifyLimiter = rateLimit({ ...limiterOptions, limit: 10 });
+const forgotPasswordLimiter = rateLimit({ ...limiterOptions, limit: 10 });
+const resetPasswordLimiter = rateLimit({ ...limiterOptions, limit: 10 });
 const loginLimiter = rateLimit({ ...limiterOptions, limit: 10 });
 const refreshLimiter = rateLimit({ ...limiterOptions, limit: 60 });
+
+// --- Email OTP helpers -----------------------------------------------------
+
+function generateOtpCode(): string {
+  return String(randomInt(100000, 1000000));
+}
+
+async function storeEmailOtp(email: string, purpose: EmailOtpPurpose, code: string): Promise<Date> {
+  // One active OTP per (email, purpose): a new send invalidates previous ones.
+  await EmailOtp.deleteMany({ email, purpose });
+  const expiresAt = new Date(Date.now() + OTP_TTL_MS);
+  await EmailOtp.create({ email, purpose, codeHash: hashToken(code), expiresAt, attemptsLeft: OTP_ATTEMPTS });
+  return expiresAt;
+}
+
+async function sendOtpEmail(to: string, code: string): Promise<void> {
+  await sendMail({
+    to,
+    subject: 'Your ExamPro verification code',
+    text: `Your ExamPro verification code is ${code}. It expires in 10 minutes.`
+  });
+}
+
+/** Verifies a code against the active OTP for (email, purpose); consumes it on success. */
+async function verifyEmailOtp(email: string, purpose: EmailOtpPurpose, code: string): Promise<void> {
+  const otp = await EmailOtp.findOne({ email, purpose }).select('+codeHash');
+  if (!otp) throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
+  if (otp.expiresAt.getTime() < Date.now()) throw new AppError(400, 'OTP_EXPIRED', OTP_EXPIRED_MESSAGE);
+  if (otp.attemptsLeft <= 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
+
+  const expected = Buffer.from(otp.codeHash, 'hex');
+  const actual = Buffer.from(hashToken(code), 'hex');
+  if (!timingSafeEqual(expected, actual)) {
+    await otp.updateOne({ $inc: { attemptsLeft: -1 } });
+    throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
+  }
+
+  // One-time use: a replayed code then fails as OTP_INVALID.
+  await otp.deleteOne();
+}
 
 async function issueSession(user: AuthUserRecord): Promise<{ raw: string; expiresAt: Date }> {
   const { raw, hash } = newRefreshToken();
@@ -140,8 +215,29 @@ authRouter.post(
   registerLimiter,
   asyncHandler(async (req, res) => {
     const { name, email, password } = registerSchema.parse(req.body);
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
 
+    // Step 1 of two: only the OTP is sent here. No account is created and no
+    // session is issued until the code verifies at /register/verify.
+    if (await User.exists({ email })) {
+      throw new AppError(409, 'EMAIL_TAKEN', 'An account with this email already exists.');
+    }
+
+    const code = generateOtpCode();
+    // Store before sending: an email that arrives must always be verifiable.
+    const otpExpiresAt = await storeEmailOtp(email, 'REGISTER', code);
+    await sendOtpEmail(email, code);
+    res.status(201).json({ email, otpExpiresAt: otpExpiresAt.toISOString() });
+  })
+);
+
+authRouter.post(
+  '/register/verify',
+  registerVerifyLimiter,
+  asyncHandler(async (req, res) => {
+    const { name, email, password, code } = registerVerifySchema.parse(req.body);
+    await verifyEmailOtp(email, 'REGISTER', code);
+
+    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     let user;
     try {
       // Role is always STUDENT on self-registration; never trust a client role.
@@ -156,6 +252,51 @@ authRouter.post(
     const session = await issueSession(user);
     setAuthCookies(res, signAccessToken(user), session.raw, session.expiresAt);
     res.status(201).json(authBody(user, session.expiresAt));
+  })
+);
+
+authRouter.post(
+  '/forgot-password',
+  forgotPasswordLimiter,
+  asyncHandler(async (req, res) => {
+    const { email } = forgotPasswordSchema.parse(req.body);
+    const exists = await User.exists({ email });
+
+    // Always 200 with the same shape — unknown emails get a plausible (but
+    // unstored) expiry so the response does not reveal account existence.
+    const fallbackExpiresAt = new Date(Date.now() + OTP_TTL_MS);
+    if (!exists) {
+      res.json({ email, otpExpiresAt: fallbackExpiresAt.toISOString() });
+      return;
+    }
+
+    const code = generateOtpCode();
+    const otpExpiresAt = await storeEmailOtp(email, 'PASSWORD_RESET', code);
+    await sendOtpEmail(email, code);
+    res.json({ email, otpExpiresAt: otpExpiresAt.toISOString() });
+  })
+);
+
+authRouter.post(
+  '/reset-password',
+  resetPasswordLimiter,
+  asyncHandler(async (req, res) => {
+    const { email, code, newPassword } = resetPasswordSchema.parse(req.body);
+    await verifyEmailOtp(email, 'PASSWORD_RESET', code);
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      // OTP existed but the account is gone — behave exactly like a bad code.
+      throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
+    }
+
+    const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
+    await user.updateOne({ $set: { passwordHash } });
+
+    // A reset revokes every established session on the account.
+    await RefreshSession.updateMany({ userId: user._id, revokedAt: null }, { $set: { revokedAt: new Date() } });
+    clearAuthCookies(res);
+    res.status(204).end();
   })
 );
 
