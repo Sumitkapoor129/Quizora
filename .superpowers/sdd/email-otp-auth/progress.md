@@ -17,4 +17,4 @@ Branch: feature/email-otp-auth
 - `d121412` feat(client): two-step Register wizard, ForgotPassword + ResetPassword pages, login forgot link, api/auth context updates + tests. Client 126 green (110 baseline + 16 new), typecheck + build clean.
 - Task A report: `.superpowers/sdd/email-otp-auth/task-A-report.md`.
 - Next: review pass, then merge to main (per main flow: run both suites once more after any further changes).
-- Fix round (security review): `d7da4bd` — atomic OTP attempt cap (I1), single-active OTP per (email,purpose) via unique index + upsert (I2), forgot-password uniform machinery (M1, store+mail for unknown emails), send limiters at 5/min (M2), mailer requireTLS (M3), +4 tests. Server 152 green, client 126 green, builds clean.
+- Fix round (security review): `4ed8d8c` — atomic OTP attempt cap (I1), single-active OTP per (email,purpose) via unique index + upsert (I2), forgot-password uniform machinery (M1, store+mail for unknown emails), send limiters at 5/min (M2), mailer requireTLS (M3), +4 tests. Server 152 green, client 126 green, builds clean.

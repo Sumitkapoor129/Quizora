@@ -2,7 +2,7 @@
 
 Status: **DONE** — all findings fixed on `feature/email-otp-auth`.
 
-Commit: `d7da4bd` — `fix(server): atomic OTP attempt cap and single-active OTP per email+purpose` (7 files, +231/-25). Not merged, not pushed.
+Commit: `4ed8d8c` — `fix(server): atomic OTP attempt cap and single-active OTP per email+purpose` (7 files, +231/-25). Not merged, not pushed.
 
 ## Problem
 
