@@ -29,7 +29,7 @@ import type {
   ValidateImportResponse,
 } from '@/types';
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+const BASE_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
 
 /** Absolute URL for a relative asset path (e.g. `/uploads/x.png`). */
 export const assetUrl = (path?: string | null): string => (path ? `${BASE_URL}${path}` : '');

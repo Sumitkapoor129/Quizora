@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "https://quizora-95vx.onrender.com/api/$1" },
+    { "source": "/uploads/(.*)", "destination": "https://quizora-95vx.onrender.com/uploads/$1" }
+  ]
+}
