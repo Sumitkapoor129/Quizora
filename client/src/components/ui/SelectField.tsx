@@ -4,10 +4,12 @@ export interface SelectFieldProps extends SelectHTMLAttributes<HTMLSelectElement
   id: string;
   label: string;
   hint?: string;
+  error?: string;
   children: ReactNode;
 }
 
-export function SelectField({ id, label, hint, className = '', children, ...rest }: SelectFieldProps) {
+export function SelectField({ id, label, hint, error, className = '', children, ...rest }: SelectFieldProps) {
+  const errorId = `${id}-error`;
   const hintId = `${id}-hint`;
 
   return (
@@ -17,15 +19,21 @@ export function SelectField({ id, label, hint, className = '', children, ...rest
       </label>
       <select
         id={id}
-        className={`field__input${className ? ` ${className}` : ''}`}
-        aria-describedby={hint ? hintId : undefined}
+        className={`field__input${error ? ' field__input--error' : ''}${className ? ` ${className}` : ''}`}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? errorId : hint ? hintId : undefined}
         {...rest}
       >
         {children}
       </select>
-      {hint && (
+      {hint && !error && (
         <p id={hintId} className="field__hint">
           {hint}
+        </p>
+      )}
+      {error && (
+        <p id={errorId} className="field__error">
+          {error}
         </p>
       )}
     </div>

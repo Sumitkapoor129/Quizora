@@ -254,6 +254,16 @@ body {
   margin-bottom: var(--space-4);
 }
 
+.form-success {
+  background: #eef6f1;
+  border: 1px solid rgba(47, 125, 79, 0.3);
+  color: var(--success);
+  font-size: var(--text-sm);
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  margin-bottom: var(--space-4);
+}
+
 /* ---------- Session banner ---------- */
 .session-banner {
   position: sticky;
@@ -343,11 +353,28 @@ body {
   margin-top: auto;
 }
 
+.resource-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.resource-card h3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* ---------- Stats ---------- */
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-4);
+}
+
+.stat-grid--4 {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 }
 
 .stat-card {
@@ -931,6 +958,12 @@ body {
   background: #fdf5f4;
   border-color: rgba(192, 57, 43, 0.25);
   color: var(--danger);
+}
+
+.banner--success {
+  background: #eef6f1;
+  border-color: rgba(47, 125, 79, 0.25);
+  color: var(--success);
 }
 
 .banner__text {

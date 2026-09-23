@@ -9,13 +9,19 @@ import type {
   AttemptResultResponse,
   AuthUser,
   CreateAttemptResponse,
+  CreateResourceInput,
   ListTestsResponse,
   PostEventResponse,
+  ProfileUpdateInput,
+  ProfileUpdateResponse,
+  Resource,
+  ResourceListResponse,
   Role,
   SaveAnswersBody,
   SaveAnswersResponse,
   SessionResponse,
   StartAttemptResponse,
+  StudentAttemptsResponse,
   StudentTestsResponse,
   UploadResponse,
   ValidateImportResponse,
@@ -55,6 +61,11 @@ function mapUser(user: SessionBody['user']): AuthUser {
 
 function mapSession(body: SessionBody): SessionResponse {
   return { user: mapUser(body.user), sessionExpiresAt: body.sessionExpiresAt };
+}
+
+/** Server serializes description as `string | null`; the client treats it as optional. */
+function normalizeResource(r: Resource): Resource {
+  return r.description == null ? { ...r, description: undefined } : r;
 }
 
 /*
@@ -174,21 +185,45 @@ export const api = {
     confirm: (input: { content: string; hash: string }) =>
       request<AdminTest>('/api/admin/import/confirm', { method: 'POST', body: JSON.stringify(input) }),
   },
-  admin: {
-    attempts: {
-      list: (testId?: string) => {
-        const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
-        return request<AdminAttemptListResponse>(`/api/admin/attempts${query}`);
+admin: {
+      attempts: {
+        list: (testId?: string) => {
+          const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
+          return request<AdminAttemptListResponse>(`/api/admin/attempts${query}`);
+        },
+        get: (attemptId: string) => request<AdminAttemptDetailResponse>(`/api/admin/attempts/${attemptId}`),
       },
-      get: (attemptId: string) => request<AdminAttemptDetailResponse>(`/api/admin/attempts/${attemptId}`),
+      analytics: (testId?: string) => {
+        const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
+        return request<import('@/types').AdminAnalytics>(`/api/admin/analytics${query}`);
+      },
+      resources: {
+        list: () =>
+          request<ResourceListResponse>('/api/admin/resources').then((body) => ({
+            resources: body.resources.map(normalizeResource),
+          })),
+        create: (input: CreateResourceInput) =>
+          request<{ resource: Resource }>('/api/admin/resources', {
+            method: 'POST',
+            body: JSON.stringify(input),
+          }).then((body) => ({ resource: normalizeResource(body.resource) })),
+        remove: (id: string) => request<void>(`/api/admin/resources/${id}`, { method: 'DELETE' }),
+      },
     },
-    analytics: (testId?: string) => {
-      const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
-      return request<import('@/types').AdminAnalytics>(`/api/admin/analytics${query}`);
-    },
-  },
   student: {
     tests: () => request<StudentTestsResponse>('/api/student/tests'),
+    resources: () =>
+      request<ResourceListResponse>('/api/student/resources').then((body) => ({
+        resources: body.resources.map(normalizeResource),
+      })),
+    attempts: () => request<StudentAttemptsResponse>('/api/student/attempts'),
+    profile: {
+      update: (input: ProfileUpdateInput) =>
+        request<ProfileUpdateResponse>('/api/student/profile', {
+          method: 'PATCH',
+          body: JSON.stringify(input),
+        }).then(mapSession),
+    },
     createAttempt: (testId: string) =>
       request<CreateAttemptResponse>(`/api/student/tests/${testId}/attempts`, { method: 'POST' }),
     startAttempt: (attemptId: string) =>

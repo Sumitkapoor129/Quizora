@@ -121,7 +121,8 @@ export type ImportErrorDetail = ErrorDetail;
 
 export type AttemptStatus = 'GATED' | 'IN_PROGRESS' | 'SUBMITTED' | 'TIMED_OUT';
 
-export interface StudentAttemptSummary {
+/** Lightweight per-test attempt marker carried on the student test list. */
+export interface StudentAttemptRef {
   id: string;
   status: AttemptStatus;
 }
@@ -137,7 +138,7 @@ export interface StudentTestListItem {
   defaultNegativeMarks: number;
   shuffleQuestions: boolean;
   shuffleOptions: boolean;
-  attempt?: StudentAttemptSummary | null;
+  attempt?: StudentAttemptRef | null;
 }
 
 export interface StudentTestsResponse {
@@ -413,3 +414,56 @@ export interface AdminAnalytics {
   perQuestion: AdminAnalyticsPerQuestion[];
   violations: AdminAnalyticsViolations;
 }
+
+/* ---------- Study resources (Phase 10) ---------- */
+
+export type ResourceKind = 'PDF' | 'ZIP' | 'IMAGE' | 'OTHER';
+
+export interface Resource {
+  id: string;
+  title: string;
+  /** Server sends `string | null`; normalized to undefined at the api layer. */
+  description?: string;
+  kind: ResourceKind;
+  driveUrl: string;
+  createdAt: string;
+  /** Admin-only — the creator's id. Absent from the student feed. */
+  createdBy?: string;
+}
+
+export interface ResourceListResponse {
+  resources: Resource[];
+}
+
+export interface CreateResourceInput {
+  title: string;
+  description?: string;
+  kind: ResourceKind;
+  driveUrl: string;
+}
+
+/* ---------- Student portal (Phase 11) ---------- */
+
+export interface StudentAttemptSummary {
+  attemptId: string;
+  testId: string;
+  testTitle: string;
+  status: AttemptStatus;
+  marksEarned: number;
+  totalMarks: number;
+  percent: number;
+  date: string;
+}
+
+export interface StudentAttemptsResponse {
+  attempts: StudentAttemptSummary[];
+}
+
+export interface ProfileUpdateInput {
+  name?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}
+
+/** PATCH /api/student/profile → same shape as /auth/me. */
+export interface ProfileUpdateResponse extends SessionResponse {}

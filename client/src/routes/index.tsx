@@ -12,12 +12,16 @@ import TestsList from '@/pages/admin/tests/List';
 import Login from '@/pages/auth/Login';
 import Register from '@/pages/auth/Register';
 import NotFound from '@/pages/NotFound';
-import Placeholder from '@/pages/Placeholder';
 import Analytics from '@/pages/admin/analytics';
+import ResourceList from '@/pages/admin/resources/ResourceList';
 import StudentDashboard from '@/pages/student/Dashboard';
 import ExamRunner from '@/pages/student/ExamRunner';
+import MyTests from '@/pages/student/MyTests';
+import Profile from '@/pages/student/Profile';
 import Result from '@/pages/student/Result';
+import Resources from '@/pages/student/Resources';
 import TestInstructions from '@/pages/student/TestInstructions';
+import Tests from '@/pages/student/Tests';
 import type { Role } from '@/types';
 
 function HomeRedirect() {
@@ -84,10 +88,10 @@ export const routes: RouteObject[] = [
     element: <ProtectedRoute role="student" />,
     children: [
       { index: true, element: <StudentDashboard /> },
-      {
-        path: 'results',
-        element: <Placeholder title="My Results" description="Scores and marked answers for tests you've taken." />,
-      },
+      { path: 'profile', element: <Profile /> },
+      { path: 'results', element: <MyTests /> },
+      { path: 'tests', element: <Tests /> },
+      { path: 'resources', element: <Resources /> },
     ],
   },
   // Exam flow: same role protection, no AppLayout chrome.
@@ -134,6 +138,10 @@ export const routes: RouteObject[] = [
       {
         path: 'analytics',
         element: <Analytics />,
+      },
+      {
+        path: 'resources',
+        element: <ResourceList />,
       },
     ],
   },

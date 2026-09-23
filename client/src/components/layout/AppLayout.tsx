@@ -11,8 +11,11 @@ interface NavItem {
 }
 
 const STUDENT_NAV: NavItem[] = [
-  { to: '/student', label: 'Home', end: true },
-  { to: '/student/results', label: 'My Results', end: false },
+  { to: '/student', label: 'Dashboard', end: true },
+  { to: '/student/profile', label: 'Profile', end: false },
+  { to: '/student/results', label: 'My Tests', end: false },
+  { to: '/student/tests', label: 'Tests', end: false },
+  { to: '/student/resources', label: 'Resources', end: false },
 ];
 
 const ADMIN_NAV: NavItem[] = [
@@ -20,6 +23,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: '/admin/tests', label: 'Tests', end: false },
   { to: '/admin/attempts', label: 'Attempts / Results', end: false },
   { to: '/admin/analytics', label: 'Analytics', end: false },
+  { to: '/admin/resources', label: 'Resources', end: false },
 ];
 
 const FOCUSABLE_SELECTOR =
@@ -40,6 +44,8 @@ export default function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const isAdmin = user?.role === 'admin';
+  const navId = isAdmin ? 'admin-nav' : 'student-nav';
+  const navLabel = isAdmin ? 'Admin navigation' : 'Student navigation';
   const [navOpen, setNavOpen] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -118,7 +124,7 @@ export default function AppLayout() {
   const home = isAdmin ? '/admin' : '/student';
 
   const nav = (
-    <nav aria-label="Primary" className={isAdmin ? 'sidebar__nav' : 'nav-row'}>
+    <nav aria-label={navLabel} className="sidebar__nav">
       {items.map((item) => (
         <NavLink
           key={item.to}
@@ -141,21 +147,19 @@ export default function AppLayout() {
       </a>
       <div className="app-content" ref={contentRef}>
         <header className="app-header">
-          {isAdmin && (
-            <button
-              ref={hamburgerRef}
-              type="button"
-              className="icon-btn hamburger"
-              aria-expanded={navOpen}
-              aria-controls="admin-nav"
-              aria-label="Toggle navigation menu"
-              onClick={() => setNavOpen((open) => !open)}
-            >
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
-                <path d="M2 4.5h14M2 9h14M2 13.5h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-              </svg>
-            </button>
-          )}
+          <button
+            ref={hamburgerRef}
+            type="button"
+            className="icon-btn hamburger"
+            aria-expanded={navOpen}
+            aria-controls={navId}
+            aria-label="Toggle navigation menu"
+            onClick={() => setNavOpen((open) => !open)}
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <path d="M2 4.5h14M2 9h14M2 13.5h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
 
           <Link to={home} className="brand-lockup" aria-label="ExamPro home">
             <span className="brand-mark" aria-hidden="true">
@@ -163,8 +167,6 @@ export default function AppLayout() {
             </span>
             <span className="brand-name">ExamPro</span>
           </Link>
-
-          {!isAdmin && nav}
 
           <div className="app-header__user">
             {user && (
@@ -182,21 +184,17 @@ export default function AppLayout() {
         </header>
 
         <div className="app-body">
-          {isAdmin && (
-            <>
-              {navOpen && (
-                <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden="true" />
-              )}
-              <aside
-                ref={drawerRef}
-                id="admin-nav"
-                className={`sidebar${navOpen ? ' sidebar--open' : ''}`}
-                aria-label="Admin navigation"
-              >
-                {nav}
-              </aside>
-            </>
+          {navOpen && (
+            <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden="true" />
           )}
+          <aside
+            ref={drawerRef}
+            id={navId}
+            className={`sidebar${navOpen ? ' sidebar--open' : ''}`}
+            aria-label={navLabel}
+          >
+            {nav}
+          </aside>
           <main id="main" className="app-main" tabIndex={-1}>
             <div className="container">
               <Outlet />
