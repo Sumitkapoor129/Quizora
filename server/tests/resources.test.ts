@@ -143,6 +143,27 @@ describe('POST /api/admin/resources', () => {
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
     expect(res.body.error.details).toContainEqual({ field: 'driveUrl', message: 'Enter a valid URL.' });
   });
+
+  it('rejects a non-http(s) driveUrl scheme with 400', async () => {
+    const res = await request(app)
+      .post('/api/admin/resources')
+      .set('Cookie', adminCookie)
+      .send(validBody({ driveUrl: 'ftp://example.com/file' }));
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.details).toContainEqual({ field: 'driveUrl', message: 'Enter a valid http(s) URL.' });
+  });
+
+  it('accepts an http:// driveUrl with 201', async () => {
+    const res = await request(app)
+      .post('/api/admin/resources')
+      .set('Cookie', adminCookie)
+      .send(validBody({ title: 'Plain HTTP Resource', driveUrl: 'http://example.com/file' }));
+
+    expect(res.status).toBe(201);
+    expect((res.body.resource as { driveUrl: string }).driveUrl).toBe('http://example.com/file');
+  });
 });
 
 // ---- 2. Admin list ----

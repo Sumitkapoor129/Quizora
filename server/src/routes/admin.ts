@@ -123,6 +123,7 @@ const RESOURCE_DESCRIPTION_MAX = 'Description must be at most 500 characters.';
 const RESOURCE_KIND_REQUIRED = 'Resource kind is required.';
 const RESOURCE_KIND_INVALID = 'Kind must be one of PDF, ZIP, IMAGE, or OTHER.';
 const RESOURCE_URL_INVALID = 'Enter a valid URL.';
+const RESOURCE_URL_HTTPS = 'Enter a valid http(s) URL.';
 
 const resourceCreateSchema = z.object({
   title: z
@@ -138,6 +139,9 @@ const resourceCreateSchema = z.object({
   driveUrl: z
     .string({ required_error: 'Drive URL is required.', invalid_type_error: 'Drive URL is required.' })
     .url(RESOURCE_URL_INVALID)
+    // .url() accepts any scheme (ftp:, mailto:, …); the client opens this in
+    // target="_blank", so restrict to http(s).
+    .refine((v) => /^https?:\/\//i.test(v), RESOURCE_URL_HTTPS)
 });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
