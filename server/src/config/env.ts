@@ -17,7 +17,10 @@ const envSchema = z.object({
   MONGODB_URI: z.string().optional(),
   JWT_ACCESS_SECRET: secretSchema,
   JWT_REFRESH_SECRET: secretSchema,
-  CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
+  CLIENT_ORIGIN: z
+    .string()
+    .default('http://localhost:5173')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
   COOKIE_SECURE: z
     .enum(['true', 'false'])
     .default('false')
@@ -78,7 +81,7 @@ export const env = {
   MONGODB_URI: parsed.data.MONGODB_URI ?? '',
   JWT_ACCESS_SECRET: parsed.data.JWT_ACCESS_SECRET ?? (isTest ? 'test-access-secret' : ''),
   JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET ?? (isTest ? 'test-refresh-secret' : ''),
-  CLIENT_ORIGIN: parsed.data.CLIENT_ORIGIN,
+  CLIENT_ORIGINS: parsed.data.CLIENT_ORIGIN,
   COOKIE_SECURE: parsed.data.COOKIE_SECURE,
   UPLOAD_DIR: parsed.data.UPLOAD_DIR,
   SMTP_HOST: parsed.data.SMTP_HOST,

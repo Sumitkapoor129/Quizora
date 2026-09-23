@@ -8,7 +8,7 @@ import { AppError } from '../errors.js';
  */
 export function originCheck(req: Request, _res: Response, next: NextFunction): void {
   const origin = req.headers.origin;
-  if (origin && origin !== env.CLIENT_ORIGIN) {
+  if (origin && !env.CLIENT_ORIGINS.includes(origin)) {
     return next(new AppError(403, 'ORIGIN_FORBIDDEN', 'Request origin not allowed.'));
   }
 
@@ -16,7 +16,7 @@ export function originCheck(req: Request, _res: Response, next: NextFunction): v
   if (referer) {
     try {
       const refOrigin = new URL(referer).origin;
-      if (refOrigin && refOrigin !== env.CLIENT_ORIGIN) {
+      if (refOrigin && !env.CLIENT_ORIGINS.includes(refOrigin)) {
         return next(new AppError(403, 'ORIGIN_FORBIDDEN', 'Request origin not allowed.'));
       }
     } catch {

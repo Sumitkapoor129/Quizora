@@ -110,7 +110,7 @@ function signAccessToken(user: AuthUserRecord): string {
 const cookieBase: CookieOptions = {
   httpOnly: true,
   secure: env.COOKIE_SECURE,
-  sameSite: 'lax',
+  sameSite: env.COOKIE_SECURE ? 'none' : 'lax',
   path: '/'
 };
 
