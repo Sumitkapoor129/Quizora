@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api } from '@/api/client';
@@ -7,7 +7,9 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { Field } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
+import { SelectField } from '@/components/ui/SelectField';
 import ImportTestModal from '@/pages/admin/tests/ImportTestModal';
 import type { AdminTestListItem, TestStatus } from '@/types';
 
@@ -45,8 +47,27 @@ export default function TestsList() {
   const [pendingDelete, setPendingDelete] = useState<AdminTestListItem | null>(null);
   const [pendingUnpublish, setPendingUnpublish] = useState<AdminTestListItem | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState<'' | TestStatus>('');
 
   const list = useQuery({ queryKey: TESTS_KEY, queryFn: api.tests.list });
+
+  // Client-side filters over the already-fetched full list (the admin list has
+  // no server-side cap, so nothing is lost by filtering here).
+  const filtered = useMemo(() => {
+    const rows = list.data?.tests ?? [];
+    const q = search.trim().toLowerCase();
+    return rows.filter((t) => {
+      if (status && t.status !== status) return false;
+      if (q && !t.title.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [list.data, search, status]);
+
+  const clearFilters = () => {
+    setSearch('');
+    setStatus('');
+  };
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: TESTS_KEY });
   const fail = (err: unknown) => setBanner(errorMessage(err));
@@ -136,8 +157,45 @@ export default function TestsList() {
       )}
 
       {list.isSuccess && list.data.tests.length > 0 && (
+        <div className="field-row">
+          <Field
+            id="tests-search"
+            label="Search tests"
+            placeholder="Filter by title"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <SelectField
+            id="tests-status-filter"
+            label="Status"
+            value={status}
+            onChange={(e) => setStatus(e.target.value as '' | TestStatus)}
+          >
+            <option value="">All statuses</option>
+            {(['DRAFT', 'PUBLISHED', 'ARCHIVED'] as TestStatus[]).map((s) => (
+              <option key={s} value={s}>
+                {STATUS_LABEL[s]}
+              </option>
+            ))}
+          </SelectField>
+        </div>
+      )}
+
+      {list.isSuccess && list.data.tests.length > 0 && filtered.length === 0 && (
+        <EmptyState
+          title="No tests match your filters."
+          description="Try a different title or status."
+          action={
+            <Button variant="secondary" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          }
+        />
+      )}
+
+      {list.isSuccess && filtered.length > 0 && (
         <div className="tests-list">
-          {list.data.tests.map((test) => (
+          {filtered.map((test) => (
             <Card key={test.id} className="test-row">
               <div className="test-row__main">
                 <div className="test-row__head">

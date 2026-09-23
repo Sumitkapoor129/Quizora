@@ -6,10 +6,17 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
+import { Field } from '@/components/ui/Field';
 import { SelectField } from '@/components/ui/SelectField';
 import { Spinner } from '@/components/ui/Spinner';
 import { formatPercent } from '@/utils/format';
 import type { AdminAnalyticsPerQuestion } from '@/types';
+
+const RANGE_OPTIONS = [
+  { value: '', label: 'All time' },
+  { value: '7', label: 'Last 7 days' },
+  { value: '30', label: 'Last 30 days' },
+];
 
 const VIOLATION_LABELS: Record<string, string> = {
   FULLSCREEN_EXIT: 'Left fullscreen',
@@ -94,6 +101,8 @@ function groupPerQuestion(items: AdminAnalyticsPerQuestion[]): PerQuestionRow[] 
 
 export default function Analytics() {
   const [testId, setTestId] = useState<string | undefined>(undefined);
+  const [range, setRange] = useState('');
+  const [search, setSearch] = useState('');
 
   const testsQuery = useQuery({
     queryKey: ['admin', 'tests'],
@@ -101,11 +110,20 @@ export default function Analytics() {
   });
 
   const analyticsQuery = useQuery({
-    queryKey: ['admin', 'analytics', testId],
-    queryFn: () => api.admin.analytics(testId),
+    queryKey: ['admin', 'analytics', testId, range],
+    queryFn: () => {
+      const from = range ? new Date(Date.now() - Number(range) * 24 * 60 * 60 * 1000).toISOString() : undefined;
+      return api.admin.analytics(testId, from);
+    },
   });
 
   const tests = testsQuery.data?.tests ?? [];
+
+  const visibleTests = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return tests;
+    return tests.filter((t) => t.title.toLowerCase().includes(q));
+  }, [tests, search]);
 
   const data = analyticsQuery.data;
   const summary = data?.summary;
@@ -154,22 +172,43 @@ export default function Analytics() {
 
       <section className="section" aria-label="Analytics filters">
         <div className="filter-field">
-          <SelectField
-            id="test-filter"
-            label="Filter by test"
-            value={testId ?? ''}
-            onChange={(e) => {
-              const v = e.target.value;
-              setTestId(v ? v : undefined);
-            }}
-          >
-            <option value="">All tests</option>
-            {tests.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.title}
+          <Field
+            id="analytics-test-search"
+            label="Find a test"
+            placeholder="Search by test title"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <SelectField id="analytics-range" label="Date range" value={range} onChange={(e) => setRange(e.target.value)}>
+            {RANGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
               </option>
             ))}
           </SelectField>
+
+          <div className="test-picker tests-list">
+            <button
+              type="button"
+              className={`btn btn--secondary btn--md picker-row${testId === undefined ? ' picker-row--active' : ''}`}
+              aria-pressed={testId === undefined}
+              onClick={() => setTestId(undefined)}
+            >
+              All tests
+            </button>
+            {visibleTests.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`btn btn--secondary btn--md picker-row${testId === t.id ? ' picker-row--active' : ''}`}
+                aria-pressed={testId === t.id}
+                onClick={() => setTestId(t.id)}
+              >
+                {t.title}
+              </button>
+            ))}
+            {visibleTests.length === 0 && <p className="field__hint">No tests match “{search}”.</p>}
+          </div>
           {testsQuery.isError && (
             <div className="filter-error">
               <p className="field__error">Couldn&apos;t load the test list.</p>
@@ -189,6 +228,7 @@ export default function Analytics() {
           }}
         />
       ) : (
+        <div role="status" aria-live="polite">
         <>
           <section className="section" aria-label="Summary">
             <div className="stat-grid">
@@ -378,6 +418,7 @@ export default function Analytics() {
             </>
           )}
         </>
+        </div>
       )}
     </>
   );

@@ -7,6 +7,7 @@ import type {
   ApiErrorBody,
   AttemptResponse,
   AttemptResultResponse,
+  AttemptStatus,
   AuthUser,
   CreateAttemptResponse,
   CreateResourceInput,
@@ -187,15 +188,21 @@ export const api = {
   },
 admin: {
       attempts: {
-        list: (testId?: string) => {
-          const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
-          return request<AdminAttemptListResponse>(`/api/admin/attempts${query}`);
+        list: (options: { testId?: string; status?: AttemptStatus } = {}) => {
+          const params = new URLSearchParams();
+          if (options.testId) params.set('testId', options.testId);
+          if (options.status) params.set('status', options.status);
+          const qs = params.toString();
+          return request<AdminAttemptListResponse>(`/api/admin/attempts${qs ? `?${qs}` : ''}`);
         },
         get: (attemptId: string) => request<AdminAttemptDetailResponse>(`/api/admin/attempts/${attemptId}`),
       },
-      analytics: (testId?: string) => {
-        const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
-        return request<import('@/types').AdminAnalytics>(`/api/admin/analytics${query}`);
+      analytics: (testId?: string, from?: string) => {
+        const params = new URLSearchParams();
+        if (testId) params.set('testId', testId);
+        if (from) params.set('from', from);
+        const qs = params.toString();
+        return request<import('@/types').AdminAnalytics>(`/api/admin/analytics${qs ? `?${qs}` : ''}`);
       },
       resources: {
         list: () =>

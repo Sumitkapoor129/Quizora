@@ -139,22 +139,65 @@ describe('Analytics', () => {
     expect(await screen.findAllByText('—', { selector: '.stat-card__value' })).toHaveLength(4);
   });
 
-  it('calls analytics with the selected test id when the dropdown changes', async () => {
+  it('loads analytics for the clicked test and returns to All tests', async () => {
     vi.mocked(api.tests.list).mockResolvedValue({ tests });
     vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
     renderAnalytics();
 
-    const select = await screen.findByLabelText('Filter by test');
-    // Initial load: no testId.
-    await waitFor(() => expect(api.admin.analytics).toHaveBeenCalledTimes(1));
-    expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined);
+    // Initial load: no testId, All tests selected.
+    expect(await screen.findByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'true');
+    expect(api.admin.analytics).toHaveBeenCalledTimes(1);
+    expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined, undefined);
 
     const user = userEvent.setup();
-    await user.selectOptions(select, 't2');
+    await user.click(await screen.findByRole('button', { name: 'Physics Quiz' }));
 
-    await waitFor(() =>
-      expect(api.admin.analytics).toHaveBeenCalledWith('t2'),
-    );
+    await waitFor(() => {
+      expect(api.admin.analytics).toHaveBeenCalledWith('t2', undefined);
+      expect(screen.getByRole('button', { name: 'Physics Quiz' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'false');
+    });
+
+    await user.click(screen.getByRole('button', { name: 'All tests' }));
+    await waitFor(() => {
+      expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined, undefined);
+      expect(screen.getByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'true');
+    });
+  });
+
+  it('filters the test picker list by title search', async () => {
+    vi.mocked(api.tests.list).mockResolvedValue({ tests });
+    vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
+    renderAnalytics();
+
+    const search = await screen.findByLabelText('Find a test');
+    const user = userEvent.setup();
+    await user.type(search, 'algebra');
+
+    expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Physics Quiz' })).not.toBeInTheDocument();
+
+    await user.type(search, 'zzz');
+    expect(screen.getByText(/No tests match/)).toBeInTheDocument();
+  });
+
+  it('passes the from param for a selected date range', async () => {
+    vi.mocked(api.tests.list).mockResolvedValue({ tests });
+    vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
+    renderAnalytics();
+
+    const range = await screen.findByLabelText('Date range');
+    const user = userEvent.setup();
+    await user.selectOptions(range, '7');
+
+    await waitFor(() => {
+      const lastCall = vi.mocked(api.admin.analytics).mock.calls.at(-1);
+      expect(lastCall?.[0]).toBeUndefined();
+      expect(lastCall?.[1]).toBeDefined();
+      const from = new Date(lastCall![1] as string).getTime();
+      expect(from).toBeGreaterThan(Date.now() - 8 * 24 * 60 * 60 * 1000);
+      expect(from).toBeLessThan(Date.now() - 6 * 24 * 60 * 60 * 1000);
+    });
   });
 
   it('renders the per-question table grouped by section with difficulty badges', async () => {
@@ -285,7 +328,7 @@ describe('Analytics', () => {
 
     const retry = await screen.findByRole('button', { name: 'Try again' });
     // The filter survives the analytics error so admins can still switch tests.
-    expect(screen.getByLabelText('Filter by test')).toBeInTheDocument();
+    expect(screen.getByLabelText('Find a test')).toBeInTheDocument();
     expect(screen.queryByText('No scored attempts yet.')).not.toBeInTheDocument();
 
     vi.mocked(api.admin.analytics).mockResolvedValueOnce(analytics);

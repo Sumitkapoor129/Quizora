@@ -70,7 +70,8 @@ describe('TestsList', () => {
       'href',
       '/admin/tests/t1/edit',
     );
-    expect(screen.getByText('Published')).toBeInTheDocument();
+    // "Published" also appears as a status-filter option, so scope the badge.
+    expect(screen.getByText('Published', { selector: '.badge' })).toBeInTheDocument();
     expect(screen.getByText(/12 questions/)).toBeInTheDocument();
   });
 
@@ -96,5 +97,40 @@ describe('TestsList', () => {
 
     await user.click(screen.getByRole('button', { name: 'Delete test' }));
     await waitFor(() => expect(api.tests.remove).toHaveBeenCalledWith('t1'));
+  });
+
+  it('filters tests client-side by title search and status', async () => {
+    vi.mocked(api.tests.list).mockResolvedValue({
+      tests: [
+        { ...sample, id: 't1', title: 'Algebra Midterm', status: 'PUBLISHED' },
+        { ...sample, id: 't2', title: 'Physics Quiz', status: 'DRAFT' },
+      ],
+    });
+    renderList();
+
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByLabelText('Search tests'), 'physics');
+    expect(screen.getByRole('link', { name: 'Physics Quiz' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Algebra Midterm' })).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText('Search tests'));
+    await user.selectOptions(screen.getByLabelText('Status'), 'PUBLISHED');
+    expect(screen.getByRole('link', { name: 'Algebra Midterm' })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Physics Quiz' })).not.toBeInTheDocument();
+  });
+
+  it('shows a no-match empty state when filters exclude every test and clears on demand', async () => {
+    vi.mocked(api.tests.list).mockResolvedValue({ tests: [sample] });
+    renderList();
+
+    const user = userEvent.setup();
+    await user.selectOptions(await screen.findByLabelText('Status'), 'ARCHIVED');
+
+    expect(await screen.findByText('No tests match your filters.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Algebra Midterm' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(screen.getByRole('link', { name: 'Algebra Midterm' })).toBeInTheDocument();
   });
 });

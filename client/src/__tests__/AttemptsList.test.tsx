@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,10 @@ vi.mock('@/api/client', async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
+      tests: {
+        ...actual.api.tests,
+        list: vi.fn(),
+      },
       admin: {
         attempts: {
           list: vi.fn(),
@@ -53,6 +57,31 @@ const attempt2: AdminAttemptListItem = {
   submittedAt: '2026-01-02T01:00:00.000Z',
 };
 
+const testList = [
+  {
+    id: 't1',
+    title: 'Algebra Midterm',
+    status: 'PUBLISHED' as const,
+    defaultNegativeMarks: 0,
+    sectionCount: 1,
+    questionCount: 2,
+    totalDurationSec: 600,
+    totalMarks: 10,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 't2',
+    title: 'Physics Quiz',
+    status: 'DRAFT' as const,
+    defaultNegativeMarks: 0,
+    sectionCount: 1,
+    questionCount: 1,
+    totalDurationSec: 300,
+    totalMarks: 5,
+    updatedAt: '2026-01-02T00:00:00.000Z',
+  },
+];
+
 function renderList() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -77,6 +106,7 @@ describe('AttemptsList', () => {
 
   it('renders rows with student, test, status, score, correct count, warnings, and date', async () => {
     vi.mocked(api.admin.attempts.list).mockResolvedValue({ attempts: [attempt1, attempt2] });
+    vi.mocked(api.tests.list).mockResolvedValue({ tests: testList });
     renderList();
 
     expect(await screen.findByRole('link', { name: 'Aria Sharma' })).toHaveAttribute(
@@ -84,7 +114,9 @@ describe('AttemptsList', () => {
       '/admin/attempts/a1',
     );
     expect(screen.getByText('aria@example.com')).toBeInTheDocument();
-    expect(screen.getByText('Algebra Midterm')).toBeInTheDocument();
+    // Test titles also appear as filter options, so scope table cells.
+    const table = screen.getByRole('table', { name: 'Student attempts' });
+    expect(within(table).getByText('Algebra Midterm')).toBeInTheDocument();
     expect(screen.getByText('8 / 12')).toBeInTheDocument();
     expect(screen.getByText('2 / 3')).toBeInTheDocument();
     expect(screen.getByText('2/3')).toBeInTheDocument();
@@ -93,13 +125,14 @@ describe('AttemptsList', () => {
     expect(screen.getByText(/Jan 1, 2026/)).toBeInTheDocument();
 
     expect(screen.getByRole('link', { name: 'Ben Liu' })).toHaveAttribute('href', '/admin/attempts/a2');
-    expect(screen.getByText('Physics Quiz')).toBeInTheDocument();
-    expect(screen.getByText('Timed out')).toBeInTheDocument();
+    expect(within(table).getByText('Physics Quiz')).toBeInTheDocument();
+    expect(within(table).getByText('Timed out')).toBeInTheDocument();
     expect(screen.getByText('3/3')).toBeInTheDocument();
   });
 
   it('shows an empty state when there are no attempts', async () => {
     vi.mocked(api.admin.attempts.list).mockResolvedValue({ attempts: [] });
+    vi.mocked(api.tests.list).mockResolvedValue({ tests: testList });
     renderList();
 
     expect(await screen.findByText('No attempts yet.')).toBeInTheDocument();
@@ -126,5 +159,36 @@ describe('AttemptsList', () => {
 
     expect(await screen.findByRole('link', { name: 'Aria Sharma' })).toBeInTheDocument();
     await waitFor(() => expect(api.admin.attempts.list).toHaveBeenCalledTimes(2));
+  });
+
+  it('refetches server-side when the status and test filters change', async () => {
+    vi.mocked(api.admin.attempts.list).mockResolvedValue({ attempts: [attempt1] });
+    vi.mocked(api.tests.list).mockResolvedValue({ tests: testList });
+    renderList();
+
+    const user = userEvent.setup();
+    await screen.findByRole('link', { name: 'Aria Sharma' });
+
+    await user.selectOptions(await screen.findByLabelText('Status'), 'SUBMITTED');
+    await waitFor(() =>
+      expect(api.admin.attempts.list).toHaveBeenLastCalledWith({ testId: undefined, status: 'SUBMITTED' }),
+    );
+
+    await user.selectOptions(screen.getByLabelText('Test'), 't1');
+    await waitFor(() =>
+      expect(api.admin.attempts.list).toHaveBeenLastCalledWith({ testId: 't1', status: 'SUBMITTED' }),
+    );
+
+    // Clearing both filters returns to the unfiltered query.
+    await user.selectOptions(screen.getByLabelText('Status'), '');
+    await user.selectOptions(screen.getByLabelText('Test'), '');
+    await waitFor(() =>
+      expect(api.admin.attempts.list).toHaveBeenLastCalledWith({ testId: undefined, status: undefined }),
+    );
+
+    // Server returns nothing for the selection → filter-aware empty state.
+    vi.mocked(api.admin.attempts.list).mockResolvedValueOnce({ attempts: [] });
+    await user.selectOptions(screen.getByLabelText('Status'), 'TIMED_OUT');
+    expect(await screen.findByText('No attempts match your filters.')).toBeInTheDocument();
   });
 });
