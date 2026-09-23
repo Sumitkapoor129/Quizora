@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { Resource } from '../models/Resource.js';
 import { Test, type TestDoc } from '../models/Test.js';
 import { TestAttempt, type TestAttemptDoc } from '../models/TestAttempt.js';
 import { User } from '../models/User.js';
@@ -112,6 +113,44 @@ function findIdPaths(value: any, base: Array<string | number> = []): Array<Array
     }
   }
   return hits;
+}
+
+// ---- Study resources (Phase 10) ----
+
+const RESOURCE_TITLE_REQUIRED = 'Resource title is required.';
+const RESOURCE_TITLE_MAX = 'Resource title must be at most 120 characters.';
+const RESOURCE_DESCRIPTION_MAX = 'Description must be at most 500 characters.';
+const RESOURCE_KIND_REQUIRED = 'Resource kind is required.';
+const RESOURCE_KIND_INVALID = 'Kind must be one of PDF, ZIP, IMAGE, or OTHER.';
+const RESOURCE_URL_INVALID = 'Enter a valid URL.';
+
+const resourceCreateSchema = z.object({
+  title: z
+    .string({ required_error: RESOURCE_TITLE_REQUIRED, invalid_type_error: RESOURCE_TITLE_REQUIRED })
+    .trim()
+    .min(1, RESOURCE_TITLE_REQUIRED)
+    .max(120, RESOURCE_TITLE_MAX),
+  description: z.string({ invalid_type_error: RESOURCE_DESCRIPTION_MAX }).max(500, RESOURCE_DESCRIPTION_MAX).optional(),
+  kind: z.enum(['PDF', 'ZIP', 'IMAGE', 'OTHER'], {
+    required_error: RESOURCE_KIND_REQUIRED,
+    invalid_type_error: RESOURCE_KIND_INVALID
+  }),
+  driveUrl: z
+    .string({ required_error: 'Drive URL is required.', invalid_type_error: 'Drive URL is required.' })
+    .url(RESOURCE_URL_INVALID)
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serializeResource(r: any): object {
+  return {
+    id: String(r._id),
+    title: r.title,
+    description: r.description ?? null,
+    kind: r.kind,
+    driveUrl: r.driveUrl,
+    createdAt: new Date(r.createdAt).toISOString(),
+    createdBy: String(r.createdBy)
+  };
 }
 
 const importRequestSchema = z.object({
@@ -626,6 +665,34 @@ adminRouter.post(
       sections: testData.sections as unknown as TestDoc['sections']
     });
     res.status(201).json(serializeTest(test));
+  })
+);
+
+// ---- Study resources (Phase 10): admin CRUD ----
+
+adminRouter.post(
+  '/resources',
+  asyncHandler(async (req, res) => {
+    const body = resourceCreateSchema.parse(req.body);
+    const resource = await Resource.create({ ...body, createdBy: req.user!.id });
+    res.status(201).json({ resource: serializeResource(resource) });
+  })
+);
+
+adminRouter.get(
+  '/resources',
+  asyncHandler(async (_req, res) => {
+    const resources = await Resource.find().sort({ createdAt: -1, _id: -1 });
+    res.json({ resources: resources.map(serializeResource) });
+  })
+);
+
+adminRouter.delete(
+  '/resources/:id',
+  asyncHandler(async (req, res) => {
+    const deleted = await Resource.findByIdAndDelete(req.params.id);
+    if (!deleted) throw new AppError(404, 'NOT_FOUND', 'Resource not found.');
+    res.status(204).end();
   })
 );
 

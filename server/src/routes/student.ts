@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto';
+import argon2 from 'argon2';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import mongoose from 'mongoose';
 import { z } from 'zod';
 import { AppError } from '../errors.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
+import { RefreshSession } from '../models/RefreshSession.js';
+import { Resource } from '../models/Resource.js';
 import { Test } from '../models/Test.js';
 import { TestAttempt, type TestAttemptDoc } from '../models/TestAttempt.js';
+import { User } from '../models/User.js';
 
 // ---- Zod bodies ----
 
@@ -667,5 +671,123 @@ studentRouter.get(
     }
     const content = buildContent(await Test.findById(attempt.testId));
     res.json({ attempt: buildResult(attempt, content) });
+  })
+);
+
+// ---- Study resources (Phase 10): student list ----
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function serializeResource(r: any): object {
+  return {
+    id: String(r._id),
+    title: r.title,
+    description: r.description ?? null,
+    kind: r.kind,
+    driveUrl: r.driveUrl,
+    createdAt: new Date(r.createdAt).toISOString()
+  };
+}
+
+studentRouter.get(
+  '/resources',
+  asyncHandler(async (_req, res) => {
+    const resources = await Resource.find().sort({ createdAt: -1, _id: -1 });
+    res.json({ resources: resources.map(serializeResource) });
+  })
+);
+
+// ---- Student portal (Phase 11) ----
+
+studentRouter.get(
+  '/attempts',
+  asyncHandler(async (req, res) => {
+    // Newest-first via _id (TestAttempt has no createdAt — same pattern as the
+    // admin attempts list).
+    // ponytail: no cursor pagination yet — add ?cursor= when a student can
+    // realistically exceed 200 attempts.
+    const attempts = await TestAttempt.find({ studentId: req.user!.id }).sort({ _id: -1 }).limit(200);
+    const testIds = [...new Set(attempts.map((a) => String(a.testId)))];
+    const tests = testIds.length ? await Test.find({ _id: { $in: testIds } }) : [];
+    const testBy = new Map(tests.map((t) => [String(t._id), t]));
+
+    res.json({
+      attempts: attempts.map((a) => {
+        const marksEarned = a.score ?? 0;
+        const totalMarks = a.maxScore ?? 0;
+        const date = a.submittedAt ?? a.startedAt ?? a._id.getTimestamp();
+        return {
+          attemptId: String(a._id),
+          testId: String(a.testId),
+          testTitle: testBy.get(String(a.testId))?.title ?? '',
+          status: a.status,
+          marksEarned,
+          totalMarks,
+          percent: totalMarks > 0 ? Math.round((marksEarned / totalMarks) * 100) : 0,
+          date: new Date(date).toISOString()
+        };
+      })
+    });
+  })
+);
+
+const profileUpdateSchema = z
+  .object({
+    name: z.string({ invalid_type_error: 'Name must be a string.' }).trim().min(1, 'Name is required.').optional(),
+    currentPassword: z
+      .string({ invalid_type_error: 'Current password must be a string.' })
+      .min(1, 'Current password is required.')
+      .optional(),
+    newPassword: z
+      .string({ invalid_type_error: 'New password must be a string.' })
+      .min(8, 'Password must be at least 8 characters.')
+      .optional()
+  })
+  .superRefine((body, ctx) => {
+    if (body.name === undefined && body.newPassword === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['name'],
+        message: 'Provide a name or a new password.'
+      });
+    }
+    if (body.newPassword !== undefined && body.currentPassword === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['currentPassword'],
+        message: 'Current password is required.'
+      });
+    }
+  });
+
+studentRouter.patch(
+  '/profile',
+  asyncHandler(async (req, res) => {
+    const body = profileUpdateSchema.parse(req.body);
+    const user = await User.findById(req.user!.id).select('+passwordHash');
+    if (!user) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication required.');
+
+    if (body.newPassword !== undefined) {
+      const ok = await argon2.verify(user.passwordHash, body.currentPassword!).catch(() => false);
+      if (!ok) {
+        throw new AppError(400, 'INVALID_CREDENTIALS', 'Current password is incorrect.');
+      }
+      user.passwordHash = await argon2.hash(body.newPassword, { type: argon2.argon2id });
+      // ponytail: refresh sessions stay alive on password change — hard-revoke later if required.
+    }
+    if (body.name !== undefined && body.name !== user.name) user.name = body.name;
+    await user.save();
+
+    // Same response shape as GET /api/auth/me (role stays the uppercase DB enum).
+    const session = await RefreshSession.findOne({
+      userId: user._id,
+      revokedAt: null,
+      expiresAt: { $gt: new Date() }
+    }).sort({ createdAt: -1 });
+    if (!session) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication required.');
+
+    res.json({
+      user: { id: String(user._id), email: user.email, name: user.name, role: user.role },
+      sessionExpiresAt: session.expiresAt.toISOString()
+    });
   })
 );
