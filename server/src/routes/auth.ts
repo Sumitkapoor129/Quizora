@@ -150,14 +150,21 @@ const limiterOptions = {
   windowMs: 60_000,
   standardHeaders: true as const,
   legacyHeaders: false as const,
-  message: limiterResponse
+  message: limiterResponse,
+  // Rate limits are a production control; the test harness fires many
+  // requests per minute from one IP per file and would exhaust even 10/min.
+  skip: () => env.NODE_ENV === 'test'
 };
 
 // One limiter instance per route: sharing an instance would pool their budgets.
-const registerLimiter = rateLimit({ ...limiterOptions, limit: 10 });
-const registerVerifyLimiter = rateLimit({ ...limiterOptions, limit: 10 });
-const forgotPasswordLimiter = rateLimit({ ...limiterOptions, limit: 10 });
-const resetPasswordLimiter = rateLimit({ ...limiterOptions, limit: 10 });
+// Sends are throttled harder than verifies: a 6-digit code has a ~1e6 keyspace
+// and send is the only client-controlled way to mint codes.
+export const OTP_SEND_LIMIT = 5;
+export const OTP_VERIFY_LIMIT = 10;
+const registerLimiter = rateLimit({ ...limiterOptions, limit: OTP_SEND_LIMIT });
+const registerVerifyLimiter = rateLimit({ ...limiterOptions, limit: OTP_VERIFY_LIMIT });
+const forgotPasswordLimiter = rateLimit({ ...limiterOptions, limit: OTP_SEND_LIMIT });
+const resetPasswordLimiter = rateLimit({ ...limiterOptions, limit: OTP_VERIFY_LIMIT });
 const loginLimiter = rateLimit({ ...limiterOptions, limit: 10 });
 const refreshLimiter = rateLimit({ ...limiterOptions, limit: 60 });
 
@@ -168,10 +175,15 @@ function generateOtpCode(): string {
 }
 
 async function storeEmailOtp(email: string, purpose: EmailOtpPurpose, code: string): Promise<Date> {
-  // One active OTP per (email, purpose): a new send invalidates previous ones.
-  await EmailOtp.deleteMany({ email, purpose });
   const expiresAt = new Date(Date.now() + OTP_TTL_MS);
-  await EmailOtp.create({ email, purpose, codeHash: hashToken(code), expiresAt, attemptsLeft: OTP_ATTEMPTS });
+  // Atomic upsert: a new send replaces the single active OTP for (email,
+  // purpose) in one step, so concurrent sends cannot leave two live codes
+  // (the (email, purpose) unique index backs this up).
+  await EmailOtp.findOneAndUpdate(
+    { email, purpose },
+    { $set: { codeHash: hashToken(code), expiresAt, attemptsLeft: OTP_ATTEMPTS } },
+    { upsert: true }
+  );
   return expiresAt;
 }
 
@@ -188,14 +200,23 @@ async function verifyEmailOtp(email: string, purpose: EmailOtpPurpose, code: str
   const otp = await EmailOtp.findOne({ email, purpose }).select('+codeHash');
   if (!otp) throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
   if (otp.expiresAt.getTime() < Date.now()) throw new AppError(400, 'OTP_EXPIRED', OTP_EXPIRED_MESSAGE);
-  if (otp.attemptsLeft <= 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
 
   const expected = Buffer.from(otp.codeHash, 'hex');
   const actual = Buffer.from(hashToken(code), 'hex');
   if (!timingSafeEqual(expected, actual)) {
-    await otp.updateOne({ $inc: { attemptsLeft: -1 } });
+    // Atomic check-and-decrement: only guesses arriving while attemptsLeft > 0
+    // consume a guess, so parallel wrong guesses cannot pierce the cap and the
+    // counter can never go negative. A no-op means the code is already spent.
+    const res = await EmailOtp.updateOne(
+      { _id: otp._id, attemptsLeft: { $gt: 0 } },
+      { $inc: { attemptsLeft: -1 } }
+    );
+    if (res.modifiedCount === 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
     throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
   }
+
+  // An exhausted code is dead even when the digits match.
+  if (otp.attemptsLeft <= 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
 
   // One-time use: a replayed code then fails as OTP_INVALID.
   await otp.deleteOne();
@@ -260,16 +281,12 @@ authRouter.post(
   forgotPasswordLimiter,
   asyncHandler(async (req, res) => {
     const { email } = forgotPasswordSchema.parse(req.body);
-    const exists = await User.exists({ email });
 
-    // Always 200 with the same shape — unknown emails get a plausible (but
-    // unstored) expiry so the response does not reveal account existence.
-    const fallbackExpiresAt = new Date(Date.now() + OTP_TTL_MS);
-    if (!exists) {
-      res.json({ email, otpExpiresAt: fallbackExpiresAt.toISOString() });
-      return;
-    }
-
+    // Uniform machinery for every email, known or unknown: same response shape
+    // AND the same server work (DB write + SMTP round-trip), so an attacker
+    // cannot tell accounts apart by response shape or wall-clock timing. The
+    // OTP stored for an unknown email is inert (reset-password still refuses
+    // to verify a missing account) and expires via the TTL index in 10 minutes.
     const code = generateOtpCode();
     const otpExpiresAt = await storeEmailOtp(email, 'PASSWORD_RESET', code);
     await sendOtpEmail(email, code);

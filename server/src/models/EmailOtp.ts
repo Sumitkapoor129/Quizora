@@ -17,4 +17,9 @@ export const emailOtpSchema = new Schema(
 );
 
 export type EmailOtpDoc = InferSchemaType<typeof emailOtpSchema>;
+
+// At most one active OTP per (email, purpose): the route stores via an atomic
+// upsert, and this index makes the invariant hold even if code paths race.
+emailOtpSchema.index({ email: 1, purpose: 1 }, { unique: true });
+
 export const EmailOtp = model('EmailOtp', emailOtpSchema);

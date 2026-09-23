@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -84,13 +85,18 @@ describe('POST /api/auth/forgot-password', () => {
     expect(otp!.attemptsLeft).toBe(5);
   });
 
-  it('responds 200 for an unknown email but sends no mail (no enumeration)', async () => {
-    const before = vi.mocked(sendMail).mock.calls.length;
+  it('for an unknown email runs the same store+mail machinery (no enumeration by shape or timing)', async () => {
     const res = await request(app).post('/api/auth/forgot-password').send({ email: 'ghost@example.com' });
     expect(res.status).toBe(200);
-    expect(res.body.email).toBe('ghost@example.com');
-    expect(vi.mocked(sendMail).mock.calls.length).toBe(before);
-    expect(await EmailOtp.countDocuments({ email: 'ghost@example.com' })).toBe(0);
+    // Identical response shape to the existing-account path…
+    expect(res.body).toEqual({ email: 'ghost@example.com', otpExpiresAt: expect.any(String) });
+    expect(Date.parse(res.body.otpExpiresAt)).toBeGreaterThan(Date.now());
+    // …and identical work on the server (DB write + mail round trip), so the
+    // wall-clock timing cannot reveal whether the account exists.
+    expect(otpCodeFromMail('ghost@example.com')).toMatch(/^\d{6}$/);
+    const otp = await EmailOtp.findOne({ email: 'ghost@example.com', purpose: 'PASSWORD_RESET' });
+    expect(otp).not.toBeNull();
+    expect(otp!.attemptsLeft).toBe(5);
   });
 
   it('rejects an invalid email with 400', async () => {
@@ -179,5 +185,38 @@ describe('POST /api/auth/reset-password', () => {
       .send({ email: 'reset-short@example.com', code, newPassword: 'short' });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a REGISTER-purpose code used at /reset-password', async () => {
+    await registerUser('cross@example.com', 'Cross Purpose');
+
+    // Plant an active REGISTER-purpose code for the same email (a real
+    // register flow cannot mint one for an existing account, so create the
+    // fixture directly).
+    await EmailOtp.create({
+      email: 'cross@example.com',
+      purpose: 'REGISTER',
+      codeHash: createHash('sha256').update('123456').digest('hex'),
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      attemptsLeft: 5
+    });
+
+    const res = await request(app)
+      .post('/api/auth/reset-password')
+      .send({ email: 'cross@example.com', code: '123456', newPassword: NEW_PASSWORD });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('OTP_INVALID');
+
+    // The cross-purpose attempt neither consumed nor decremented the
+    // REGISTER-purpose code…
+    const otp = await EmailOtp.findOne({ email: 'cross@example.com', purpose: 'REGISTER' });
+    expect(otp).not.toBeNull();
+    expect(otp!.attemptsLeft).toBe(5);
+
+    // …and the password is untouched.
+    const login = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'cross@example.com', password: PASSWORD });
+    expect(login.status).toBe(200);
   });
 });

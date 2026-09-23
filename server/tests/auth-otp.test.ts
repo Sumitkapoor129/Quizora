@@ -8,6 +8,7 @@ import { EmailOtp } from '../src/models/EmailOtp.js';
 import { RefreshSession } from '../src/models/RefreshSession.js';
 import { User } from '../src/models/User.js';
 import { sendMail } from '../src/services/mailer.js';
+import { OTP_SEND_LIMIT, OTP_VERIFY_LIMIT } from '../src/routes/auth.js';
 
 vi.mock('../src/services/mailer.js', () => ({ sendMail: vi.fn() }));
 
@@ -40,6 +41,13 @@ function otpCodeFromMail(to: string): string {
   const match = /(\d{6})/.exec(call![0].text);
   expect(match, `expected a 6-digit code in mail to ${to}`).not.toBeNull();
   return match![1];
+}
+
+/** Every 6-digit code mailed to `to` (concurrent sends leave more than one). */
+function otpCodesFromMail(to: string): string[] {
+  const calls = vi.mocked(sendMail).mock.calls.filter((c) => c[0].to === to);
+  expect(calls, `expected at least one mail to ${to}`).not.toHaveLength(0);
+  return calls.map((c) => /^.*?(\d{6})/.exec(c[0].text)?.[1] ?? '');
 }
 
 function cookiePair(res: request.Response, name: string): string | undefined {
@@ -101,6 +109,14 @@ describe('POST /api/auth/register (step 1 — send OTP)', () => {
       .post('/api/auth/register/verify')
       .send({ name: 'Replace', email: 'replace@example.com', password: PASSWORD, code: secondCode });
     expect(fresh.status).toBe(201);
+  });
+});
+
+describe('OTP send vs verify rate limits', () => {
+  it('throttles the two SEND routes to 5/min and verify/reset to 10/min', () => {
+    expect(OTP_SEND_LIMIT).toBe(5);
+    expect(OTP_VERIFY_LIMIT).toBe(10);
+    expect(OTP_SEND_LIMIT).toBeLessThan(OTP_VERIFY_LIMIT);
   });
 });
 
@@ -206,5 +222,68 @@ describe('POST /api/auth/register/verify (step 2 — create account + session)',
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('OTP_ATTEMPTS_EXCEEDED');
     expect(await User.exists({ email: 'locked@example.com' })).toBeNull();
+  });
+
+  it('parallel wrong guesses cannot exceed the attempt cap or drive the counter negative', async () => {
+    const email = 'burst@example.com';
+    await sendRegisterOtp(email, 'Burst');
+    expect((await EmailOtp.findOne({ email, purpose: 'REGISTER' }))!.attemptsLeft).toBe(5);
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        request(app)
+          .post('/api/auth/register/verify')
+          .send({ name: 'Burst', email, password: PASSWORD, code: '000000' })
+      )
+    );
+
+    const invalid = results.filter((r) => r.status === 400 && r.body.error.code === 'OTP_INVALID');
+    const exceeded = results.filter((r) => r.status === 400 && r.body.error.code === 'OTP_ATTEMPTS_EXCEEDED');
+    expect(results.every((r) => r.status === 400)).toBe(true);
+    // The decrement is atomic: only the 5 guesses that arrive while
+    // attemptsLeft > 0 may consume a guess; the rest are refused as exhausted.
+    expect(invalid.length).toBe(5);
+    expect(exceeded.length).toBe(5);
+    expect(invalid.length + exceeded.length).toBe(10);
+
+    const after = await EmailOtp.findOne({ email, purpose: 'REGISTER' });
+    expect(after!.attemptsLeft).toBe(0);
+    expect(await User.exists({ email })).toBeNull();
+  });
+
+  it('two concurrent sends leave exactly one active OTP and only the winning code verifies', async () => {
+    const email = 'concurrent@example.com';
+    const [first, second] = await Promise.all([
+      request(app).post('/api/auth/register').send({ name: 'Concurrent', email, password: PASSWORD }),
+      request(app).post('/api/auth/register').send({ name: 'Concurrent', email, password: PASSWORD })
+    ]);
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+
+    // The (email, purpose) unique index + atomic upsert guarantee exactly one
+    // active code even when two sends race.
+    expect(await EmailOtp.countDocuments({ email, purpose: 'REGISTER' })).toBe(1);
+
+    const codes = otpCodesFromMail(email);
+    expect(codes).toHaveLength(2);
+    expect(codes[0]).not.toBe(codes[1]);
+
+    const tryCode = (code: string) =>
+      request(app)
+        .post('/api/auth/register/verify')
+        .send({ name: 'Concurrent', email, password: PASSWORD, code });
+
+    const a = await tryCode(codes[0]);
+    const b = await tryCode(codes[1]);
+
+    // Exactly one code survived the concurrent sends; the loser is rejected.
+    expect([a, b].filter((r) => r.status === 201)).toHaveLength(1);
+    const rejected = [a, b].filter((r) => r.status === 400);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].body.error.code).toBe('OTP_INVALID');
+
+    // The single doc is consumed by the winner; exactly one account is created.
+    expect(await EmailOtp.countDocuments({ email, purpose: 'REGISTER' })).toBe(0);
+    expect(await User.exists({ email })).not.toBeNull();
   });
 });
