@@ -311,6 +311,14 @@ body {
   color: var(--ink-muted);
 }
 
+.results-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  color: var(--ink-muted);
+}
+
 /* ---------- Cards ---------- */
 .card {
   background: var(--surface);

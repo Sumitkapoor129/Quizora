@@ -157,7 +157,11 @@ export default function Analytics() {
 
   const showTestSubheadings = data?.testId == null && testGroups.length > 1;
 
-  if (analyticsQuery.isPending || testsQuery.isPending) {
+  const selectionLabel = testId
+    ? tests.find((t) => t.id === testId)?.title ?? 'selected test'
+    : 'all tests';
+
+  if (testsQuery.isPending) {
     return (
       <div className="route-loading">
         <Spinner label="Loading analytics" />
@@ -207,7 +211,7 @@ export default function Analytics() {
                 {t.title}
               </button>
             ))}
-            {visibleTests.length === 0 && <p className="field__hint">No tests match “{search}”.</p>}
+            {search && visibleTests.length === 0 && <p className="field__hint">No tests match “{search}”.</p>}
           </div>
           {testsQuery.isError && (
             <div className="filter-error">
@@ -220,7 +224,11 @@ export default function Analytics() {
         </div>
       </section>
 
-      {analyticsQuery.isError ? (
+      {analyticsQuery.isPending ? (
+        <div className="results-loading">
+          <Spinner label="Loading analytics" />
+        </div>
+      ) : analyticsQuery.isError ? (
         <ErrorState
           onRetry={() => {
             void analyticsQuery.refetch();
@@ -228,8 +236,10 @@ export default function Analytics() {
           }}
         />
       ) : (
-        <div role="status" aria-live="polite">
         <>
+          <p className="sr-only" role="status" aria-live="polite">
+            Results updated{selectionLabel ? ` for ${selectionLabel}` : ''}
+          </p>
           <section className="section" aria-label="Summary">
             <div className="stat-grid">
               <Card className="stat-card">
@@ -418,7 +428,6 @@ export default function Analytics() {
             </>
           )}
         </>
-        </div>
       )}
     </>
   );

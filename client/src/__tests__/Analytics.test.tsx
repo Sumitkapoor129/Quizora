@@ -171,14 +171,70 @@ describe('Analytics', () => {
     renderAnalytics();
 
     const search = await screen.findByLabelText('Find a test');
+    // Empty search: all tests listed and no no-match hint (zero-tests case must stay quiet).
+    expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Physics Quiz' })).toBeInTheDocument();
+    expect(screen.queryByText(/No tests match/)).not.toBeInTheDocument();
+
     const user = userEvent.setup();
     await user.type(search, 'algebra');
 
     expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Physics Quiz' })).not.toBeInTheDocument();
 
+    // A search that matches nothing does show the hint.
     await user.type(search, 'zzz');
     expect(screen.getByText(/No tests match/)).toBeInTheDocument();
+  });
+
+  it('does not show the no-match hint for an empty search when there are zero tests', async () => {
+    vi.mocked(api.tests.list).mockResolvedValue({ tests: [] });
+    vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
+    renderAnalytics();
+
+    expect(await screen.findByLabelText('Find a test')).toBeInTheDocument();
+    expect(screen.queryByText(/No tests match/)).not.toBeInTheDocument();
+  });
+
+  it('announces result swaps with a concise live region, not the full results', async () => {
+    vi.mocked(api.tests.list).mockResolvedValue({ tests });
+    vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
+    renderAnalytics();
+
+    await screen.findByText('42');
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveClass('sr-only');
+    expect(status.textContent).toMatch(/Results updated/);
+    // The live region carries only a short status — not stat values, table data, or headings.
+    expect(status.textContent).not.toContain('42');
+    expect(status.textContent).not.toContain('What is x?');
+    expect(within(status).queryByRole('table')).not.toBeInTheDocument();
+    expect(within(status).queryByText('Attempts scored')).not.toBeInTheDocument();
+    // The stats themselves are still rendered, just outside the live region.
+    expect(screen.getByText('42')).toBeInTheDocument();
+  });
+
+  it('keeps the picker mounted while analytics load, showing a compact loading state', async () => {
+    vi.mocked(api.tests.list).mockResolvedValue({ tests });
+    // First load (All tests) resolves; the next selection's fetch never settles.
+    vi.mocked(api.admin.analytics)
+      .mockResolvedValueOnce(analytics)
+      .mockImplementationOnce(() => new Promise<AdminAnalytics>(() => {}));
+    renderAnalytics();
+
+    await screen.findByText('42');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Physics Quiz' }));
+
+    // Filters (search box + test rows) survive the pending fetch instead of a full-page spinner.
+    expect(screen.getByLabelText('Find a test')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'All tests' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Physics Quiz' })).toBeInTheDocument();
+    // The results area shows a compact loading indicator and no stale results.
+    expect(screen.getByText('Loading analytics')).toBeInTheDocument();
+    expect(screen.queryByText('Attempts scored')).not.toBeInTheDocument();
   });
 
   it('passes the from param for a selected date range', async () => {
