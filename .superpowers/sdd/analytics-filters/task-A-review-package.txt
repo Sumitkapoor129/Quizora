@@ -1,0 +1,1161 @@
+diff --git a/client/src/__tests__/Analytics.test.tsx b/client/src/__tests__/Analytics.test.tsx
+index 4f08914..a33821d 100644
+--- a/client/src/__tests__/Analytics.test.tsx
++++ b/client/src/__tests__/Analytics.test.tsx
+@@ -134,32 +134,75 @@ describe('Analytics', () => {
+       perQuestion: [],
+       violations: { byType: {}, attemptsWithViolations: 0, totalWarnings: 0 },
+     });
+     renderAnalytics();
+ 
+     expect(await screen.findAllByText('ÔÇö', { selector: '.stat-card__value' })).toHaveLength(4);
+   });
+ 
+-  it('calls analytics with the selected test id when the dropdown changes', async () => {
++  it('loads analytics for the clicked test and returns to All tests', async () => {
+     vi.mocked(api.tests.list).mockResolvedValue({ tests });
+     vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
+     renderAnalytics();
+ 
+-    const select = await screen.findByLabelText('Filter by test');
+-    // Initial load: no testId.
+-    await waitFor(() => expect(api.admin.analytics).toHaveBeenCalledTimes(1));
+-    expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined);
++    // Initial load: no testId, All tests selected.
++    expect(await screen.findByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'true');
++    expect(api.admin.analytics).toHaveBeenCalledTimes(1);
++    expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined, undefined);
+ 
+     const user = userEvent.setup();
+-    await user.selectOptions(select, 't2');
++    await user.click(await screen.findByRole('button', { name: 'Physics Quiz' }));
+ 
+-    await waitFor(() =>
+-      expect(api.admin.analytics).toHaveBeenCalledWith('t2'),
+-    );
++    await waitFor(() => {
++      expect(api.admin.analytics).toHaveBeenCalledWith('t2', undefined);
++      expect(screen.getByRole('button', { name: 'Physics Quiz' })).toHaveAttribute('aria-pressed', 'true');
++      expect(screen.getByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'false');
++    });
++
++    await user.click(screen.getByRole('button', { name: 'All tests' }));
++    await waitFor(() => {
++      expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined, undefined);
++      expect(screen.getByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'true');
++    });
++  });
++
++  it('filters the test picker list by title search', async () => {
++    vi.mocked(api.tests.list).mockResolvedValue({ tests });
++    vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
++    renderAnalytics();
++
++    const search = await screen.findByLabelText('Find a test');
++    const user = userEvent.setup();
++    await user.type(search, 'algebra');
++
++    expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
++    expect(screen.queryByRole('button', { name: 'Physics Quiz' })).not.toBeInTheDocument();
++
++    await user.type(search, 'zzz');
++    expect(screen.getByText(/No tests match/)).toBeInTheDocument();
++  });
++
++  it('passes the from param for a selected date range', async () => {
++    vi.mocked(api.tests.list).mockResolvedValue({ tests });
++    vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
++    renderAnalytics();
++
++    const range = await screen.findByLabelText('Date range');
++    const user = userEvent.setup();
++    await user.selectOptions(range, '7');
++
++    await waitFor(() => {
++      const lastCall = vi.mocked(api.admin.analytics).mock.calls.at(-1);
++      expect(lastCall?.[0]).toBeUndefined();
++      expect(lastCall?.[1]).toBeDefined();
++      const from = new Date(lastCall![1] as string).getTime();
++      expect(from).toBeGreaterThan(Date.now() - 8 * 24 * 60 * 60 * 1000);
++      expect(from).toBeLessThan(Date.now() - 6 * 24 * 60 * 60 * 1000);
++    });
+   });
+ 
+   it('renders the per-question table grouped by section with difficulty badges', async () => {
+     vi.mocked(api.tests.list).mockResolvedValue({ tests });
+     vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
+     renderAnalytics();
+ 
+     // Section 1 (index 0) table
+@@ -280,17 +323,17 @@ describe('Analytics', () => {
+     vi.mocked(api.tests.list).mockResolvedValue({ tests });
+     vi.mocked(api.admin.analytics).mockRejectedValueOnce(
+       new ApiError(500, { error: { code: 'INTERNAL_ERROR', message: 'boom' } }),
+     );
+     renderAnalytics();
+ 
+     const retry = await screen.findByRole('button', { name: 'Try again' });
+     // The filter survives the analytics error so admins can still switch tests.
+-    expect(screen.getByLabelText('Filter by test')).toBeInTheDocument();
++    expect(screen.getByLabelText('Find a test')).toBeInTheDocument();
+     expect(screen.queryByText('No scored attempts yet.')).not.toBeInTheDocument();
+ 
+     vi.mocked(api.admin.analytics).mockResolvedValueOnce(analytics);
+     const user = userEvent.setup();
+     await user.click(retry);
+ 
+     expect(await screen.findByText('Attempts scored')).toBeInTheDocument();
+     await waitFor(() => expect(api.admin.analytics).toHaveBeenCalledTimes(2));
+diff --git a/client/src/__tests__/AttemptsList.test.tsx b/client/src/__tests__/AttemptsList.test.tsx
+index 1451f79..6019e44 100644
+--- a/client/src/__tests__/AttemptsList.test.tsx
++++ b/client/src/__tests__/AttemptsList.test.tsx
+@@ -1,23 +1,27 @@
+ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+-import { render, screen, waitFor } from '@testing-library/react';
++import { render, screen, waitFor, within } from '@testing-library/react';
+ import userEvent from '@testing-library/user-event';
+ import { MemoryRouter, Route, Routes } from 'react-router-dom';
+ import { beforeEach, describe, expect, it, vi } from 'vitest';
+ import { ApiError, api } from '@/api/client';
+ import AttemptsList from '@/pages/admin/attempts/AttemptsList';
+ import type { AdminAttemptListItem } from '@/types';
+ 
+ vi.mock('@/api/client', async (importOriginal) => {
+   const actual = await importOriginal<typeof import('@/api/client')>();
+   return {
+     ...actual,
+     api: {
+       ...actual.api,
++      tests: {
++        ...actual.api.tests,
++        list: vi.fn(),
++      },
+       admin: {
+         attempts: {
+           list: vi.fn(),
+           get: vi.fn(),
+         },
+       },
+     },
+   };
+@@ -48,16 +52,41 @@ const attempt2: AdminAttemptListItem = {
+   maxScore: 10,
+   correctCount: 0,
+   totalQuestions: 5,
+   warningCount: 3,
+   startedAt: '2026-01-02T00:00:00.000Z',
+   submittedAt: '2026-01-02T01:00:00.000Z',
+ };
+ 
++const testList = [
++  {
++    id: 't1',
++    title: 'Algebra Midterm',
++    status: 'PUBLISHED' as const,
++    defaultNegativeMarks: 0,
++    sectionCount: 1,
++    questionCount: 2,
++    totalDurationSec: 600,
++    totalMarks: 10,
++    updatedAt: '2026-01-01T00:00:00.000Z',
++  },
++  {
++    id: 't2',
++    title: 'Physics Quiz',
++    status: 'DRAFT' as const,
++    defaultNegativeMarks: 0,
++    sectionCount: 1,
++    questionCount: 1,
++    totalDurationSec: 300,
++    totalMarks: 5,
++    updatedAt: '2026-01-02T00:00:00.000Z',
++  },
++];
++
+ function renderList() {
+   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+   render(
+     <QueryClientProvider client={queryClient}>
+       <MemoryRouter
+         initialEntries={['/admin/attempts']}
+         future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+       >
+@@ -72,39 +101,43 @@ function renderList() {
+ 
+ describe('AttemptsList', () => {
+   beforeEach(() => {
+     vi.clearAllMocks();
+   });
+ 
+   it('renders rows with student, test, status, score, correct count, warnings, and date', async () => {
+     vi.mocked(api.admin.attempts.list).mockResolvedValue({ attempts: [attempt1, attempt2] });
++    vi.mocked(api.tests.list).mockResolvedValue({ tests: testList });
+     renderList();
+ 
+     expect(await screen.findByRole('link', { name: 'Aria Sharma' })).toHaveAttribute(
+       'href',
+       '/admin/attempts/a1',
+     );
+     expect(screen.getByText('aria@example.com')).toBeInTheDocument();
+-    expect(screen.getByText('Algebra Midterm')).toBeInTheDocument();
++    // Test titles also appear as filter options, so scope table cells.
++    const table = screen.getByRole('table', { name: 'Student attempts' });
++    expect(within(table).getByText('Algebra Midterm')).toBeInTheDocument();
+     expect(screen.getByText('8 / 12')).toBeInTheDocument();
+     expect(screen.getByText('2 / 3')).toBeInTheDocument();
+     expect(screen.getByText('2/3')).toBeInTheDocument();
+     // Status column header + the SUBMITTED row badge both read "Submitted".
+     expect(screen.getAllByText('Submitted').length).toBeGreaterThanOrEqual(2);
+     expect(screen.getByText(/Jan 1, 2026/)).toBeInTheDocument();
+ 
+     expect(screen.getByRole('link', { name: 'Ben Liu' })).toHaveAttribute('href', '/admin/attempts/a2');
+-    expect(screen.getByText('Physics Quiz')).toBeInTheDocument();
+-    expect(screen.getByText('Timed out')).toBeInTheDocument();
++    expect(within(table).getByText('Physics Quiz')).toBeInTheDocument();
++    expect(within(table).getByText('Timed out')).toBeInTheDocument();
+     expect(screen.getByText('3/3')).toBeInTheDocument();
+   });
+ 
+   it('shows an empty state when there are no attempts', async () => {
+     vi.mocked(api.admin.attempts.list).mockResolvedValue({ attempts: [] });
++    vi.mocked(api.tests.list).mockResolvedValue({ tests: testList });
+     renderList();
+ 
+     expect(await screen.findByText('No attempts yet.')).toBeInTheDocument();
+   });
+ 
+   it('shows a loading skeleton while loading', async () => {
+     vi.mocked(api.admin.attempts.list).mockImplementation(() => new Promise(() => {}));
+     renderList();
+@@ -122,9 +155,40 @@ describe('AttemptsList', () => {
+     vi.mocked(api.admin.attempts.list).mockResolvedValueOnce({ attempts: [attempt1] });
+ 
+     const user = userEvent.setup();
+     await user.click(retry);
+ 
+     expect(await screen.findByRole('link', { name: 'Aria Sharma' })).toBeInTheDocument();
+     await waitFor(() => expect(api.admin.attempts.list).toHaveBeenCalledTimes(2));
+   });
++
++  it('refetches server-side when the status and test filters change', async () => {
++    vi.mocked(api.admin.attempts.list).mockResolvedValue({ attempts: [attempt1] });
++    vi.mocked(api.tests.list).mockResolvedValue({ tests: testList });
++    renderList();
++
++    const user = userEvent.setup();
++    await screen.findByRole('link', { name: 'Aria Sharma' });
++
++    await user.selectOptions(await screen.findByLabelText('Status'), 'SUBMITTED');
++    await waitFor(() =>
++      expect(api.admin.attempts.list).toHaveBeenLastCalledWith({ testId: undefined, status: 'SUBMITTED' }),
++    );
++
++    await user.selectOptions(screen.getByLabelText('Test'), 't1');
++    await waitFor(() =>
++      expect(api.admin.attempts.list).toHaveBeenLastCalledWith({ testId: 't1', status: 'SUBMITTED' }),
++    );
++
++    // Clearing both filters returns to the unfiltered query.
++    await user.selectOptions(screen.getByLabelText('Status'), '');
++    await user.selectOptions(screen.getByLabelText('Test'), '');
++    await waitFor(() =>
++      expect(api.admin.attempts.list).toHaveBeenLastCalledWith({ testId: undefined, status: undefined }),
++    );
++
++    // Server returns nothing for the selection ÔåÆ filter-aware empty state.
++    vi.mocked(api.admin.attempts.list).mockResolvedValueOnce({ attempts: [] });
++    await user.selectOptions(screen.getByLabelText('Status'), 'TIMED_OUT');
++    expect(await screen.findByText('No attempts match your filters.')).toBeInTheDocument();
++  });
+ });
+\ No newline at end of file
+diff --git a/client/src/__tests__/TestsList.test.tsx b/client/src/__tests__/TestsList.test.tsx
+index 3514724..6c0c000 100644
+--- a/client/src/__tests__/TestsList.test.tsx
++++ b/client/src/__tests__/TestsList.test.tsx
+@@ -65,17 +65,18 @@ describe('TestsList', () => {
+   it('renders tests returned by the API', async () => {
+     vi.mocked(api.tests.list).mockResolvedValue({ tests: [sample] });
+     renderList();
+ 
+     expect(await screen.findByRole('link', { name: 'Algebra Midterm' })).toHaveAttribute(
+       'href',
+       '/admin/tests/t1/edit',
+     );
+-    expect(screen.getByText('Published')).toBeInTheDocument();
++    // "Published" also appears as a status-filter option, so scope the badge.
++    expect(screen.getByText('Published', { selector: '.badge' })).toBeInTheDocument();
+     expect(screen.getByText(/12 questions/)).toBeInTheDocument();
+   });
+ 
+   it('shows the empty state with a create CTA when there are no tests', async () => {
+     vi.mocked(api.tests.list).mockResolvedValue({ tests: [] });
+     renderList();
+ 
+     expect(await screen.findByText('No tests yet.')).toBeInTheDocument();
+@@ -92,9 +93,44 @@ describe('TestsList', () => {
+     renderList();
+ 
+     await user.click(await screen.findByRole('button', { name: 'Delete' }));
+     expect(await screen.findByRole('heading', { name: 'Delete test' })).toBeInTheDocument();
+ 
+     await user.click(screen.getByRole('button', { name: 'Delete test' }));
+     await waitFor(() => expect(api.tests.remove).toHaveBeenCalledWith('t1'));
+   });
++
++  it('filters tests client-side by title search and status', async () => {
++    vi.mocked(api.tests.list).mockResolvedValue({
++      tests: [
++        { ...sample, id: 't1', title: 'Algebra Midterm', status: 'PUBLISHED' },
++        { ...sample, id: 't2', title: 'Physics Quiz', status: 'DRAFT' },
++      ],
++    });
++    renderList();
++
++    const user = userEvent.setup();
++
++    await user.type(await screen.findByLabelText('Search tests'), 'physics');
++    expect(screen.getByRole('link', { name: 'Physics Quiz' })).toBeInTheDocument();
++    expect(screen.queryByRole('link', { name: 'Algebra Midterm' })).not.toBeInTheDocument();
++
++    await user.clear(screen.getByLabelText('Search tests'));
++    await user.selectOptions(screen.getByLabelText('Status'), 'PUBLISHED');
++    expect(screen.getByRole('link', { name: 'Algebra Midterm' })).toBeInTheDocument();
++    expect(screen.queryByRole('link', { name: 'Physics Quiz' })).not.toBeInTheDocument();
++  });
++
++  it('shows a no-match empty state when filters exclude every test and clears on demand', async () => {
++    vi.mocked(api.tests.list).mockResolvedValue({ tests: [sample] });
++    renderList();
++
++    const user = userEvent.setup();
++    await user.selectOptions(await screen.findByLabelText('Status'), 'ARCHIVED');
++
++    expect(await screen.findByText('No tests match your filters.')).toBeInTheDocument();
++    expect(screen.queryByRole('link', { name: 'Algebra Midterm' })).not.toBeInTheDocument();
++
++    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
++    expect(screen.getByRole('link', { name: 'Algebra Midterm' })).toBeInTheDocument();
++  });
+ });
+diff --git a/client/src/api/client.ts b/client/src/api/client.ts
+index 4fcf92b..8407217 100644
+--- a/client/src/api/client.ts
++++ b/client/src/api/client.ts
+@@ -2,16 +2,17 @@ import type {
+   AdminAttemptDetailResponse,
+   AdminAttemptListResponse,
+   AdminTest,
+   AdminTestWrite,
+   AntiCheatEventType,
+   ApiErrorBody,
+   AttemptResponse,
+   AttemptResultResponse,
++  AttemptStatus,
+   AuthUser,
+   CreateAttemptResponse,
+   CreateResourceInput,
+   ListTestsResponse,
+   PostEventResponse,
+   ProfileUpdateInput,
+   ProfileUpdateResponse,
+   Resource,
+@@ -182,25 +183,31 @@ export const api = {
+   imports: {
+     validate: (input: { content: string }) =>
+       request<ValidateImportResponse>('/api/admin/import/validate', { method: 'POST', body: JSON.stringify(input) }),
+     confirm: (input: { content: string; hash: string }) =>
+       request<AdminTest>('/api/admin/import/confirm', { method: 'POST', body: JSON.stringify(input) }),
+   },
+ admin: {
+       attempts: {
+-        list: (testId?: string) => {
+-          const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
+-          return request<AdminAttemptListResponse>(`/api/admin/attempts${query}`);
++        list: (options: { testId?: string; status?: AttemptStatus } = {}) => {
++          const params = new URLSearchParams();
++          if (options.testId) params.set('testId', options.testId);
++          if (options.status) params.set('status', options.status);
++          const qs = params.toString();
++          return request<AdminAttemptListResponse>(`/api/admin/attempts${qs ? `?${qs}` : ''}`);
+         },
+         get: (attemptId: string) => request<AdminAttemptDetailResponse>(`/api/admin/attempts/${attemptId}`),
+       },
+-      analytics: (testId?: string) => {
+-        const query = testId ? `?testId=${encodeURIComponent(testId)}` : '';
+-        return request<import('@/types').AdminAnalytics>(`/api/admin/analytics${query}`);
++      analytics: (testId?: string, from?: string) => {
++        const params = new URLSearchParams();
++        if (testId) params.set('testId', testId);
++        if (from) params.set('from', from);
++        const qs = params.toString();
++        return request<import('@/types').AdminAnalytics>(`/api/admin/analytics${qs ? `?${qs}` : ''}`);
+       },
+       resources: {
+         list: () =>
+           request<ResourceListResponse>('/api/admin/resources').then((body) => ({
+             resources: body.resources.map(normalizeResource),
+           })),
+         create: (input: CreateResourceInput) =>
+           request<{ resource: Resource }>('/api/admin/resources', {
+diff --git a/client/src/pages/admin/analytics.tsx b/client/src/pages/admin/analytics.tsx
+index d780fd3..95d92ef 100644
+--- a/client/src/pages/admin/analytics.tsx
++++ b/client/src/pages/admin/analytics.tsx
+@@ -1,21 +1,28 @@
+ import { useMemo, useState } from 'react';
+ import { useQuery } from '@tanstack/react-query';
+ import { api } from '@/api/client';
+ import { Badge, type BadgeVariant } from '@/components/ui/Badge';
+ import { Button } from '@/components/ui/Button';
+ import { Card } from '@/components/ui/Card';
+ import { EmptyState } from '@/components/ui/EmptyState';
+ import { ErrorState } from '@/components/ui/ErrorState';
++import { Field } from '@/components/ui/Field';
+ import { SelectField } from '@/components/ui/SelectField';
+ import { Spinner } from '@/components/ui/Spinner';
+ import { formatPercent } from '@/utils/format';
+ import type { AdminAnalyticsPerQuestion } from '@/types';
+ 
++const RANGE_OPTIONS = [
++  { value: '', label: 'All time' },
++  { value: '7', label: 'Last 7 days' },
++  { value: '30', label: 'Last 30 days' },
++];
++
+ const VIOLATION_LABELS: Record<string, string> = {
+   FULLSCREEN_EXIT: 'Left fullscreen',
+   COPY: 'Copy',
+   PASTE: 'Paste',
+   CUT: 'Cut',
+   CONTEXT_MENU: 'Context menu',
+   VISIBILITY_HIDDEN: 'Tab/window hidden',
+   FOCUS_LOST: 'Focus lost',
+@@ -89,29 +96,40 @@ function groupPerQuestion(items: AdminAnalyticsPerQuestion[]): PerQuestionRow[]
+     if (a.sectionIndex !== b.sectionIndex) return a.sectionIndex - b.sectionIndex;
+     return a.order - b.order;
+   });
+   return rows.map((r, idx) => ({ ...r, order: idx + 1 }));
+ }
+ 
+ export default function Analytics() {
+   const [testId, setTestId] = useState<string | undefined>(undefined);
++  const [range, setRange] = useState('');
++  const [search, setSearch] = useState('');
+ 
+   const testsQuery = useQuery({
+     queryKey: ['admin', 'tests'],
+     queryFn: () => api.tests.list(),
+   });
+ 
+   const analyticsQuery = useQuery({
+-    queryKey: ['admin', 'analytics', testId],
+-    queryFn: () => api.admin.analytics(testId),
++    queryKey: ['admin', 'analytics', testId, range],
++    queryFn: () => {
++      const from = range ? new Date(Date.now() - Number(range) * 24 * 60 * 60 * 1000).toISOString() : undefined;
++      return api.admin.analytics(testId, from);
++    },
+   });
+ 
+   const tests = testsQuery.data?.tests ?? [];
+ 
++  const visibleTests = useMemo(() => {
++    const q = search.trim().toLowerCase();
++    if (!q) return tests;
++    return tests.filter((t) => t.title.toLowerCase().includes(q));
++  }, [tests, search]);
++
+   const data = analyticsQuery.data;
+   const summary = data?.summary;
+   const distribution = data?.distribution ?? [];
+   const perQuestion = data?.perQuestion ?? [];
+   const violations = data?.violations;
+ 
+   const hasNoScored = (summary?.scoredAttempts ?? 0) === 0;
+ 
+@@ -149,32 +167,53 @@ export default function Analytics() {
+ 
+   return (
+     <>
+       <h1 className="page-heading">Analytics</h1>
+       <p className="page-sub">Performance trends across tests and students.</p>
+ 
+       <section className="section" aria-label="Analytics filters">
+         <div className="filter-field">
+-          <SelectField
+-            id="test-filter"
+-            label="Filter by test"
+-            value={testId ?? ''}
+-            onChange={(e) => {
+-              const v = e.target.value;
+-              setTestId(v ? v : undefined);
+-            }}
+-          >
+-            <option value="">All tests</option>
+-            {tests.map((t) => (
+-              <option key={t.id} value={t.id}>
+-                {t.title}
++          <Field
++            id="analytics-test-search"
++            label="Find a test"
++            placeholder="Search by test title"
++            value={search}
++            onChange={(e) => setSearch(e.target.value)}
++          />
++          <SelectField id="analytics-range" label="Date range" value={range} onChange={(e) => setRange(e.target.value)}>
++            {RANGE_OPTIONS.map((o) => (
++              <option key={o.value} value={o.value}>
++                {o.label}
+               </option>
+             ))}
+           </SelectField>
++
++          <div className="test-picker tests-list">
++            <button
++              type="button"
++              className={`btn btn--secondary btn--md picker-row${testId === undefined ? ' picker-row--active' : ''}`}
++              aria-pressed={testId === undefined}
++              onClick={() => setTestId(undefined)}
++            >
++              All tests
++            </button>
++            {visibleTests.map((t) => (
++              <button
++                key={t.id}
++                type="button"
++                className={`btn btn--secondary btn--md picker-row${testId === t.id ? ' picker-row--active' : ''}`}
++                aria-pressed={testId === t.id}
++                onClick={() => setTestId(t.id)}
++              >
++                {t.title}
++              </button>
++            ))}
++            {visibleTests.length === 0 && <p className="field__hint">No tests match ÔÇ£{search}ÔÇØ.</p>}
++          </div>
+           {testsQuery.isError && (
+             <div className="filter-error">
+               <p className="field__error">Couldn&apos;t load the test list.</p>
+               <Button variant="ghost" size="sm" onClick={() => void testsQuery.refetch()}>
+                 Retry
+               </Button>
+             </div>
+           )}
+@@ -184,16 +223,17 @@ export default function Analytics() {
+       {analyticsQuery.isError ? (
+         <ErrorState
+           onRetry={() => {
+             void analyticsQuery.refetch();
+             if (testsQuery.isError) void testsQuery.refetch();
+           }}
+         />
+       ) : (
++        <div role="status" aria-live="polite">
+         <>
+           <section className="section" aria-label="Summary">
+             <div className="stat-grid">
+               <Card className="stat-card">
+                 <p className="stat-card__value">{summary?.scoredAttempts ?? 0}</p>
+                 <p className="stat-card__label">Attempts scored</p>
+                 <p className="stat-card__hint">attempts with a score</p>
+               </Card>
+@@ -373,12 +413,13 @@ export default function Analytics() {
+                   ) : (
+                     <EmptyState title="No violations." description="No anti-cheat events recorded." />
+                   )}
+                 </Card>
+               </section>
+             </>
+           )}
+         </>
++        </div>
+       )}
+     </>
+   );
+ }
+\ No newline at end of file
+diff --git a/client/src/pages/admin/attempts/AttemptsList.tsx b/client/src/pages/admin/attempts/AttemptsList.tsx
+index 9850efd..9caa813 100644
+--- a/client/src/pages/admin/attempts/AttemptsList.tsx
++++ b/client/src/pages/admin/attempts/AttemptsList.tsx
+@@ -1,46 +1,113 @@
++import { useState } from 'react';
+ import { Link } from 'react-router-dom';
+ import { useQuery } from '@tanstack/react-query';
+ import { api } from '@/api/client';
+ import { Badge } from '@/components/ui/Badge';
++import { Button } from '@/components/ui/Button';
+ import { Card } from '@/components/ui/Card';
+ import { EmptyState } from '@/components/ui/EmptyState';
+ import { ErrorState } from '@/components/ui/ErrorState';
++import { SelectField } from '@/components/ui/SelectField';
+ import { formatDateTime } from '@/utils/format';
+ import { ATTEMPT_STATUS_LABEL, ATTEMPT_STATUS_VARIANT } from '@/utils/attemptStatus';
++import type { AttemptStatus } from '@/types';
+ 
+ const ATTEMPTS_KEY = ['admin', 'attempts'];
+ 
++const STATUS_OPTIONS: AttemptStatus[] = ['GATED', 'IN_PROGRESS', 'SUBMITTED', 'TIMED_OUT'];
++
+ export default function AttemptsList() {
+-  const list = useQuery({ queryKey: ATTEMPTS_KEY, queryFn: () => api.admin.attempts.list() });
++  const [testId, setTestId] = useState('');
++  const [status, setStatus] = useState('');
++
++  // Server-side filters: the list is capped at 200, so narrowing happens in
++  // the query, not in the browser.
++  const list = useQuery({
++    queryKey: [...ATTEMPTS_KEY, testId, status],
++    queryFn: () =>
++      api.admin.attempts.list({
++        testId: testId || undefined,
++        status: (status || undefined) as AttemptStatus | undefined,
++      }),
++  });
++
++  // Reuses the tests query already cached by the Tests page / analytics.
++  const testsQuery = useQuery({ queryKey: ['admin', 'tests'], queryFn: api.tests.list });
++
++  const hasFilters = Boolean(testId || status);
+ 
+   return (
+     <>
+       <div className="page-header">
+         <div>
+           <h1 className="page-heading">Attempts</h1>
+           <p className="page-sub">Review student submissions, scores, and anti-cheat activity.</p>
+         </div>
+       </div>
+ 
++      <section className="section" aria-label="Attempt filters">
++        <div className="field-row">
++          <SelectField
++            id="attempts-test-filter"
++            label="Test"
++            value={testId}
++            onChange={(e) => setTestId(e.target.value)}
++          >
++            {testsQuery.isPending ? (
++              <option value="">Loading testsÔÇª</option>
++            ) : (
++              <>
++                <option value="">All tests</option>
++                {(testsQuery.data?.tests ?? []).map((t) => (
++                  <option key={t.id} value={t.id}>
++                    {t.title}
++                  </option>
++                ))}
++              </>
++            )}
++          </SelectField>
++          <SelectField id="attempts-status-filter" label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
++            <option value="">All statuses</option>
++            {STATUS_OPTIONS.map((s) => (
++              <option key={s} value={s}>
++                {ATTEMPT_STATUS_LABEL[s]}
++              </option>
++            ))}
++          </SelectField>
++        </div>
++        {testsQuery.isError && (
++          <div className="filter-error">
++            <p className="field__error">Couldn&apos;t load the test list.</p>
++            <Button variant="ghost" size="sm" onClick={() => void testsQuery.refetch()}>
++              Retry
++            </Button>
++          </div>
++        )}
++      </section>
++
+       {list.isPending && (
+         <div className="tests-list" role="status" aria-label="Loading attempts">
+           <div className="skeleton-row" aria-hidden="true" />
+           <div className="skeleton-row" aria-hidden="true" />
+           <div className="skeleton-row" aria-hidden="true" />
+         </div>
+       )}
+ 
+       {list.isError && <ErrorState onRetry={() => list.refetch()} />}
+ 
+       {list.isSuccess && list.data.attempts.length === 0 && (
+         <EmptyState
+-          title="No attempts yet."
+-          description="When a student submits a test, their attempt will appear here with the score and a full answer review."
++          title={hasFilters ? 'No attempts match your filters.' : 'No attempts yet.'}
++          description={
++            hasFilters
++              ? 'Try a different test or status.'
++              : 'When a student submits a test, their attempt will appear here with the score and a full answer review.'
++          }
+         />
+       )}
+ 
+       {list.isSuccess && list.data.attempts.length > 0 && (
+         <Card className="table-card">
+           <div className="table-wrap">
+             <table className="data-table" aria-label="Student attempts">
+               <thead>
+diff --git a/client/src/pages/admin/tests/List.tsx b/client/src/pages/admin/tests/List.tsx
+index 1fa9fef..9600d1b 100644
+--- a/client/src/pages/admin/tests/List.tsx
++++ b/client/src/pages/admin/tests/List.tsx
+@@ -1,18 +1,20 @@
+-import { useState } from 'react';
++import { useMemo, useState } from 'react';
+ import { Link } from 'react-router-dom';
+ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+ import { ApiError, api } from '@/api/client';
+ import { Badge, type BadgeVariant } from '@/components/ui/Badge';
+ import { Button } from '@/components/ui/Button';
+ import { Card } from '@/components/ui/Card';
+ import { EmptyState } from '@/components/ui/EmptyState';
+ import { ErrorState } from '@/components/ui/ErrorState';
++import { Field } from '@/components/ui/Field';
+ import { Modal } from '@/components/ui/Modal';
++import { SelectField } from '@/components/ui/SelectField';
+ import ImportTestModal from '@/pages/admin/tests/ImportTestModal';
+ import type { AdminTestListItem, TestStatus } from '@/types';
+ 
+ const TESTS_KEY = ['admin', 'tests'];
+ 
+ const STATUS_LABEL: Record<TestStatus, string> = {
+   DRAFT: 'Draft',
+   PUBLISHED: 'Published',
+@@ -40,19 +42,38 @@ function formatDuration(totalSec: number): string {
+ }
+ 
+ export default function TestsList() {
+   const queryClient = useQueryClient();
+   const [banner, setBanner] = useState<string | null>(null);
+   const [pendingDelete, setPendingDelete] = useState<AdminTestListItem | null>(null);
+   const [pendingUnpublish, setPendingUnpublish] = useState<AdminTestListItem | null>(null);
+   const [importOpen, setImportOpen] = useState(false);
++  const [search, setSearch] = useState('');
++  const [status, setStatus] = useState<'' | TestStatus>('');
+ 
+   const list = useQuery({ queryKey: TESTS_KEY, queryFn: api.tests.list });
+ 
++  // Client-side filters over the already-fetched full list (the admin list has
++  // no server-side cap, so nothing is lost by filtering here).
++  const filtered = useMemo(() => {
++    const rows = list.data?.tests ?? [];
++    const q = search.trim().toLowerCase();
++    return rows.filter((t) => {
++      if (status && t.status !== status) return false;
++      if (q && !t.title.toLowerCase().includes(q)) return false;
++      return true;
++    });
++  }, [list.data, search, status]);
++
++  const clearFilters = () => {
++    setSearch('');
++    setStatus('');
++  };
++
+   const invalidate = () => queryClient.invalidateQueries({ queryKey: TESTS_KEY });
+   const fail = (err: unknown) => setBanner(errorMessage(err));
+ 
+   const publish = useMutation({
+     mutationFn: (test: AdminTestListItem) => api.tests.publish(test.id),
+     onSuccess: invalidate,
+     onError: fail,
+   });
+@@ -131,18 +152,55 @@ export default function TestsList() {
+                 Create your first test
+               </Link>
+             </div>
+           }
+         />
+       )}
+ 
+       {list.isSuccess && list.data.tests.length > 0 && (
++        <div className="field-row">
++          <Field
++            id="tests-search"
++            label="Search tests"
++            placeholder="Filter by title"
++            value={search}
++            onChange={(e) => setSearch(e.target.value)}
++          />
++          <SelectField
++            id="tests-status-filter"
++            label="Status"
++            value={status}
++            onChange={(e) => setStatus(e.target.value as '' | TestStatus)}
++          >
++            <option value="">All statuses</option>
++            {(['DRAFT', 'PUBLISHED', 'ARCHIVED'] as TestStatus[]).map((s) => (
++              <option key={s} value={s}>
++                {STATUS_LABEL[s]}
++              </option>
++            ))}
++          </SelectField>
++        </div>
++      )}
++
++      {list.isSuccess && list.data.tests.length > 0 && filtered.length === 0 && (
++        <EmptyState
++          title="No tests match your filters."
++          description="Try a different title or status."
++          action={
++            <Button variant="secondary" onClick={clearFilters}>
++              Clear filters
++            </Button>
++          }
++        />
++      )}
++
++      {list.isSuccess && filtered.length > 0 && (
+         <div className="tests-list">
+-          {list.data.tests.map((test) => (
++          {filtered.map((test) => (
+             <Card key={test.id} className="test-row">
+               <div className="test-row__main">
+                 <div className="test-row__head">
+                   <Link className="test-row__title" to={`/admin/tests/${test.id}/edit`}>
+                     {test.title}
+                   </Link>
+                   <Badge variant={STATUS_VARIANT[test.status]}>{STATUS_LABEL[test.status]}</Badge>
+                 </div>
+diff --git a/client/src/styles/global.css b/client/src/styles/global.css
+index 45f6c94..fae670a 100644
+--- a/client/src/styles/global.css
++++ b/client/src/styles/global.css
+@@ -2069,16 +2069,34 @@ textarea.field__input {
+   gap: var(--space-3);
+   margin-top: var(--space-2);
+ }
+ 
+ .filter-error .field__error {
+   margin-top: 0;
+ }
+ 
++/* ---------- Analytics test picker ---------- */
++.picker-row {
++  width: 100%;
++  justify-content: flex-start;
++  text-align: left;
++}
++
++.picker-row--active {
++  border-color: var(--accent);
++  color: var(--accent);
++}
++
++.test-picker {
++  margin-top: var(--space-3);
++  max-height: 320px;
++  overflow-y: auto;
++}
++
+ .violations__grid {
+   display: flex;
+   flex-wrap: wrap;
+   gap: var(--space-2);
+ }
+ 
+ @media (max-width: 640px) {
+   .histogram__bar {
+diff --git a/server/src/routes/admin.ts b/server/src/routes/admin.ts
+index 075d471..6be8c6b 100644
+--- a/server/src/routes/admin.ts
++++ b/server/src/routes/admin.ts
+@@ -698,18 +698,31 @@ adminRouter.delete(
+     if (!deleted) throw new AppError(404, 'NOT_FOUND', 'Resource not found.');
+     res.status(204).end();
+   })
+ );
+ 
+ adminRouter.get(
+   '/attempts',
+   asyncHandler(async (req, res) => {
+-    const { testId } = z.object({ testId: z.string().trim().optional() }).parse(req.query);
+-    const filter = testId ? { testId } : {};
++    const { testId, status } = z
++      .object({
++        testId: z.string().trim().optional(),
++        status: z
++          .enum(['GATED', 'IN_PROGRESS', 'SUBMITTED', 'TIMED_OUT'], {
++            invalid_type_error: 'status must be one of GATED, IN_PROGRESS, SUBMITTED, TIMED_OUT.'
++          })
++          .optional()
++      })
++      .parse(req.query);
++    // Both filters apply BEFORE the cap so the 200 rows reflect the selection,
++    // not whatever the newest attempts happen to be.
++    const filter: FilterQuery<TestAttemptDoc> = {};
++    if (testId) filter.testId = testId;
++    if (status) filter.status = status;
+     // _id embeds the creation timestamp ÔÇö newest first without a schema change.
+     // Hard cap keeps the global (all-students) list bounded as volume grows.
+     // ponytail: no cursor pagination yet ÔÇö add ?page=/cursor when the list can
+     // realistically exceed a few hundred attempts.
+     const attempts = await TestAttempt.find(filter).sort({ _id: -1 }).limit(200);
+     const testIds = [...new Set(attempts.map((a) => String(a.testId)))];
+     const studentIds = [...new Set(attempts.map((a) => String(a.studentId)))];
+     const [tests, users] = await Promise.all([
+@@ -757,30 +770,56 @@ type QuestionAgg = {
+   seq: number;
+   type: string;
+   marks: number;
+   text?: string;
+   attempted: number;
+   correct: number;
+ };
+ 
++/** Optional ISO date query param; empty string is treated as absent. */
++const optionalIsoDate = (name: string) =>
++  z
++    .string()
++    .trim()
++    .optional()
++    .transform((v) => (v === '' ? undefined : v))
++    .refine((v) => v === undefined || !Number.isNaN(new Date(v).getTime()), {
++      message: `${name} must be a valid ISO date (YYYY-MM-DD).`
++    });
++
+ adminRouter.get(
+   '/analytics',
+   asyncHandler(async (req, res) => {
+-    const { testId } = z
+-      .object({ testId: z.string().trim().regex(/^[0-9a-fA-F]{24}$/, 'testId must be a valid ObjectId.').optional() })
++    const { testId, from, to } = z
++      .object({
++        testId: z.string().trim().regex(/^[0-9a-fA-F]{24}$/, 'testId must be a valid ObjectId.').optional(),
++        from: optionalIsoDate('from'),
++        to: optionalIsoDate('to')
++      })
+       .parse(req.query);
+ 
+     const testFilter: FilterQuery<TestAttemptDoc> = testId ? { testId } : {};
+     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+ 
++    // Date range AND-combines with testId on the scored-attempts query only;
++    // attemptsToday stays the last-24h stat regardless of from/to.
++    const submittedAt: { $gte?: Date; $lte?: Date } = {};
++    if (from) submittedAt.$gte = new Date(from);
++    if (to) submittedAt.$lte = new Date(to);
++    const hasDateRange = from !== undefined || to !== undefined;
++
+     // # ponytail: JS-side analysis over the 1000 most recent scored attempts ÔÇö
+     // switch to Mongo aggregation/$facet when volume exceeds ~1000 scored attempts.
+     const [attempts, attemptsToday] = await Promise.all([
+-      TestAttempt.find({ ...testFilter, status: { $in: ['SUBMITTED', 'TIMED_OUT'] } })
++      TestAttempt.find({
++        ...testFilter,
++        status: { $in: ['SUBMITTED', 'TIMED_OUT'] },
++        ...(hasDateRange ? { submittedAt } : {})
++      })
+         .sort({ _id: -1 })
+         .limit(1000),
+       // attemptsToday counts ALL attempts (any status) submitted in the last 24h.
+       TestAttempt.countDocuments({ ...testFilter, submittedAt: { $gte: since } })
+     ]);
+ 
+     const total = attempts.length;
+     let scoreSum = 0;
+diff --git a/server/tests/admin-analytics.test.ts b/server/tests/admin-analytics.test.ts
+index 708ca53..bec7afc 100644
+--- a/server/tests/admin-analytics.test.ts
++++ b/server/tests/admin-analytics.test.ts
+@@ -394,16 +394,75 @@ describe('GET /api/admin/analytics ?testId filter', () => {
+     expect(delBody.perQuestion[0]).toMatchObject({
+       testId: filterTest,
+       testTitle: 'Analytics Filter',
+       text: 'fq'
+     });
+   });
+ });
+ 
++// ---- 5b. from/to date-range filter ----
++
++describe('GET /api/admin/analytics ?from/?to date-range filter', () => {
++  it('bounds the scored-attempts window, leaves attemptsToday and absent params unchanged', async () => {
++    const testId = await publishTest('Analytics Window', [
++      { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'wq', 2, [opt(0, 'wa', true), opt(1, 'wb')])] }
++    ]);
++    const { attemptId } = await runAttempt(testId, studentCookie, [{ text: 'wq', optionTexts: ['wa'] }]);
++
++    const { TestAttempt } = await import('../src/models/TestAttempt.js');
++    // Backdate the sole attempt ~40 days so it only matches an explicit window.
++    await TestAttempt.updateOne(
++      { _id: attemptId },
++      { $set: { submittedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000) } }
++    );
++
++    const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
++
++    const inRange = await getAnalytics(`?testId=${testId}&from=${iso(45)}`);
++    expect(inRange.status).toBe(200);
++    expect((inRange.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
++    // attemptsToday ignores from/to ÔÇö it stays a last-24h stat.
++    expect((inRange.body as AnalyticsBody).summary.attemptsToday).toBe(0);
++
++    const tooNew = await getAnalytics(`?testId=${testId}&from=${iso(10)}`);
++    expect(tooNew.status).toBe(200);
++    expect((tooNew.body as AnalyticsBody).summary.scoredAttempts).toBe(0);
++
++    const bounded = await getAnalytics(`?testId=${testId}&from=${iso(45)}&to=${iso(35)}`);
++    expect(bounded.status).toBe(200);
++    expect((bounded.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
++
++    const tooTight = await getAnalytics(`?testId=${testId}&from=${iso(45)}&to=${iso(45)}`);
++    expect(tooTight.status).toBe(200);
++    expect((tooTight.body as AnalyticsBody).summary.scoredAttempts).toBe(0);
++
++    // Absent params keep today's default behavior (the old attempt still counts).
++    const plain = await getAnalytics(`?testId=${testId}`);
++    expect(plain.status).toBe(200);
++    expect((plain.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
++
++    // Blank range params behave like "no range".
++    const blankFrom = await getAnalytics(`?testId=${testId}&from=`);
++    expect(blankFrom.status).toBe(200);
++    expect((blankFrom.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
++  });
++
++  it('rejects malformed date params with the flat-details error shape', async () => {
++    const badFrom = await getAnalytics('?from=not-a-date');
++    expect(badFrom.status).toBe(400);
++    expect(badFrom.body.error.code).toBe('VALIDATION_ERROR');
++    expect(badFrom.body.error.details[0].field).toBe('from');
++
++    const badTo = await getAnalytics('?to=garbage');
++    expect(badTo.status).toBe(400);
++    expect(badTo.body.error.details[0].field).toBe('to');
++  });
++});
++
+ // ---- 6. attemptsToday window ----
+ 
+ describe('GET /api/admin/analytics attemptsToday', () => {
+   it('counts only attempts submitted within the last 24h, excluding old submittedAt', async () => {
+     const testId = await publishTest('Analytics Old', [
+       { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'oq', 1, [opt(0, 'oa', true), opt(1, 'ob')])] }
+     ]);
+     const { attemptId } = await runAttempt(testId, studentCookie, [{ text: 'oq', optionTexts: ['oa'] }]);
+diff --git a/server/tests/admin-attempts.test.ts b/server/tests/admin-attempts.test.ts
+index d1c9d07..a4f5b1d 100644
+--- a/server/tests/admin-attempts.test.ts
++++ b/server/tests/admin-attempts.test.ts
+@@ -1,12 +1,13 @@
+ import { mkdtemp, rm } from 'node:fs/promises';
+ import os from 'node:os';
+ import { join } from 'node:path';
+ import argon2 from 'argon2';
++import { Types } from 'mongoose';
+ import { MongoMemoryServer } from 'mongodb-memory-server';
+ import request from 'supertest';
+ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+ import type { Express } from 'express';
+ 
+ const PASSWORD = 'password123';
+ 
+ let mongo: MongoMemoryServer | undefined;
+@@ -298,16 +299,105 @@ describe('GET /api/admin/attempts', () => {
+ 
+     const res = await request(app).get('/api/admin/attempts?testId=').set('Cookie', adminCookie);
+     expect(res.status).toBe(200);
+     expect(Array.isArray(res.body.attempts)).toBe(true);
+     expect(res.body.attempts.length).toBeGreaterThan(0);
+   });
+ });
+ 
++// ---- 2b. Status filter ----
++
++describe('GET /api/admin/attempts ?status filter', () => {
++  it('filters by each of the four statuses and composes with testId', async () => {
++    const byTitle: Record<string, string> = {};
++    for (const title of ['Status Gated', 'Status InProgress', 'Status Submitted', 'Status TimedOut']) {
++      byTitle[title] = await publishTest(title, [
++        { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'q?', 1, [opt(0, 'a', true), opt(1, 'b')])] }
++      ], { shuffleQuestions: false, shuffleOptions: false });
++    }
++
++    const gated = await createAttempt(byTitle['Status Gated'], studentCookie);
++
++    const inProgress = await createAttempt(byTitle['Status InProgress'], studentCookie);
++    await startAttempt(inProgress, studentCookie);
++
++    const submitted = await createAttempt(byTitle['Status Submitted'], studentCookie);
++    const started = await startAttempt(submitted, studentCookie);
++    await answerCorrect(submitted, started, 'q?', 'a', studentCookie);
++    await submitAttempt(submitted, studentCookie);
++
++    const timedOut = await createAttempt(byTitle['Status TimedOut'], studentCookie);
++    const startedTO = await startAttempt(timedOut, studentCookie);
++    await answerCorrect(timedOut, startedTO, 'q?', 'a', studentCookie);
++    const { TestAttempt } = await import('../src/models/TestAttempt.js');
++    await TestAttempt.updateOne({ _id: timedOut }, { $set: { endAt: new Date(Date.now() - 60_000) } });
++    // Lazy expiry only runs on the student-facing read, not the admin route.
++    const touch = await request(app).get(`/api/student/attempts/${timedOut}`).set('Cookie', studentCookie);
++    expect(touch.status).toBe(200);
++    expect(touch.body.attempt.status).toBe('TIMED_OUT');
++
++    const idsFor = async (qs: string): Promise<string[]> => {
++      const res = await request(app).get(`/api/admin/attempts${qs}`).set('Cookie', adminCookie);
++      expect(res.status).toBe(200);
++      return (res.body.attempts as Array<Record<string, any>>).map((a) => a.id);
++    };
++
++    // Each test has exactly one attempt, so testId+status pins a single row.
++    expect(await idsFor(`?testId=${byTitle['Status Gated']}&status=GATED`)).toEqual([gated]);
++    expect(await idsFor(`?testId=${byTitle['Status InProgress']}&status=IN_PROGRESS`)).toEqual([inProgress]);
++    expect(await idsFor(`?testId=${byTitle['Status Submitted']}&status=SUBMITTED`)).toEqual([submitted]);
++    expect(await idsFor(`?testId=${byTitle['Status TimedOut']}&status=TIMED_OUT`)).toEqual([timedOut]);
++
++    // The two filters AND together.
++    expect(await idsFor(`?testId=${byTitle['Status Submitted']}&status=GATED`)).toEqual([]);
++  });
++
++  it('applies the status filter before the 200-attempt cap', async () => {
++    const testId = await publishTest('Status Cap', [
++      { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'q?', 1, [opt(0, 'a', true), opt(1, 'b')])] }
++    ], { shuffleQuestions: false, shuffleOptions: false });
++
++    // One SUBMITTED attempt (oldest), then a flood of newer GATED docs that
++    // push it out of the unfiltered 200-row window.
++    const submitted = await createAttempt(testId, studentCookie);
++    const started = await startAttempt(submitted, studentCookie);
++    await answerCorrect(submitted, started, 'q?', 'a', studentCookie);
++    await submitAttempt(submitted, studentCookie);
++
++    const { TestAttempt } = await import('../src/models/TestAttempt.js');
++    await TestAttempt.insertMany(
++      Array.from({ length: 201 }, () => ({ testId, studentId: new Types.ObjectId(), status: 'GATED' }))
++    );
++
++    const unfiltered = await request(app).get(`/api/admin/attempts?testId=${testId}`).set('Cookie', adminCookie);
++    expect(unfiltered.status).toBe(200);
++    const unfilteredAttempts = unfiltered.body.attempts as Array<Record<string, any>>;
++    expect(unfilteredAttempts).toHaveLength(200);
++    expect(unfilteredAttempts.every((a) => a.status === 'GATED')).toBe(true);
++    expect(unfilteredAttempts.map((a) => a.id)).not.toContain(submitted);
++
++    // Filtering first means the single matching attempt still comes back.
++    const filtered = await request(app)
++      .get(`/api/admin/attempts?testId=${testId}&status=SUBMITTED`)
++      .set('Cookie', adminCookie);
++    expect(filtered.status).toBe(200);
++    const filteredAttempts = filtered.body.attempts as Array<Record<string, any>>;
++    expect(filteredAttempts).toHaveLength(1);
++    expect(filteredAttempts[0]).toMatchObject({ id: submitted, status: 'SUBMITTED' });
++  });
++
++  it('rejects an unknown status with the flat-details error shape', async () => {
++    const res = await request(app).get('/api/admin/attempts?status=DELETE_ME').set('Cookie', adminCookie);
++    expect(res.status).toBe(400);
++    expect(res.body.error.code).toBe('VALIDATION_ERROR');
++    expect(res.body.error.details[0].field).toBe('status');
++  });
++});
++
+ // ---- 3. Detail ----
+ 
+ describe('GET /api/admin/attempts/:attemptId', () => {
+   it('serializes the full answer key for a submitted multi-section attempt', async () => {
+     const testId = await publishTest(
+       'Detail Key',
+       [
+         {
