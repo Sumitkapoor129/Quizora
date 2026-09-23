@@ -71,7 +71,7 @@ function AddResourceModal({ onClose, onCreated }: AddResourceModalProps) {
           if (detail.field === 'title') mapped.title = detail.message;
           if (detail.field === 'description') mapped.description = detail.message;
           if (detail.field === 'kind') mapped.kind = detail.message;
-          if (detail.field === 'driveUrl') mapped.driveUrl = detail.message;
+          if (detail.field === 'driveUrl') mapped['drive-url'] = detail.message;
         }
         if (Object.keys(mapped).length > 0) {
           setFieldErrors((prev) => ({ ...prev, ...mapped }));
