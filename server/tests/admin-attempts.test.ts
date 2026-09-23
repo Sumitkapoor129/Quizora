@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
 import argon2 from 'argon2';
+import { Types } from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -300,6 +301,95 @@ describe('GET /api/admin/attempts', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.attempts)).toBe(true);
     expect(res.body.attempts.length).toBeGreaterThan(0);
+  });
+});
+
+// ---- 2b. Status filter ----
+
+describe('GET /api/admin/attempts ?status filter', () => {
+  it('filters by each of the four statuses and composes with testId', async () => {
+    const byTitle: Record<string, string> = {};
+    for (const title of ['Status Gated', 'Status InProgress', 'Status Submitted', 'Status TimedOut']) {
+      byTitle[title] = await publishTest(title, [
+        { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'q?', 1, [opt(0, 'a', true), opt(1, 'b')])] }
+      ], { shuffleQuestions: false, shuffleOptions: false });
+    }
+
+    const gated = await createAttempt(byTitle['Status Gated'], studentCookie);
+
+    const inProgress = await createAttempt(byTitle['Status InProgress'], studentCookie);
+    await startAttempt(inProgress, studentCookie);
+
+    const submitted = await createAttempt(byTitle['Status Submitted'], studentCookie);
+    const started = await startAttempt(submitted, studentCookie);
+    await answerCorrect(submitted, started, 'q?', 'a', studentCookie);
+    await submitAttempt(submitted, studentCookie);
+
+    const timedOut = await createAttempt(byTitle['Status TimedOut'], studentCookie);
+    const startedTO = await startAttempt(timedOut, studentCookie);
+    await answerCorrect(timedOut, startedTO, 'q?', 'a', studentCookie);
+    const { TestAttempt } = await import('../src/models/TestAttempt.js');
+    await TestAttempt.updateOne({ _id: timedOut }, { $set: { endAt: new Date(Date.now() - 60_000) } });
+    // Lazy expiry only runs on the student-facing read, not the admin route.
+    const touch = await request(app).get(`/api/student/attempts/${timedOut}`).set('Cookie', studentCookie);
+    expect(touch.status).toBe(200);
+    expect(touch.body.attempt.status).toBe('TIMED_OUT');
+
+    const idsFor = async (qs: string): Promise<string[]> => {
+      const res = await request(app).get(`/api/admin/attempts${qs}`).set('Cookie', adminCookie);
+      expect(res.status).toBe(200);
+      return (res.body.attempts as Array<Record<string, any>>).map((a) => a.id);
+    };
+
+    // Each test has exactly one attempt, so testId+status pins a single row.
+    expect(await idsFor(`?testId=${byTitle['Status Gated']}&status=GATED`)).toEqual([gated]);
+    expect(await idsFor(`?testId=${byTitle['Status InProgress']}&status=IN_PROGRESS`)).toEqual([inProgress]);
+    expect(await idsFor(`?testId=${byTitle['Status Submitted']}&status=SUBMITTED`)).toEqual([submitted]);
+    expect(await idsFor(`?testId=${byTitle['Status TimedOut']}&status=TIMED_OUT`)).toEqual([timedOut]);
+
+    // The two filters AND together.
+    expect(await idsFor(`?testId=${byTitle['Status Submitted']}&status=GATED`)).toEqual([]);
+  });
+
+  it('applies the status filter before the 200-attempt cap', async () => {
+    const testId = await publishTest('Status Cap', [
+      { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'q?', 1, [opt(0, 'a', true), opt(1, 'b')])] }
+    ], { shuffleQuestions: false, shuffleOptions: false });
+
+    // One SUBMITTED attempt (oldest), then a flood of newer GATED docs that
+    // push it out of the unfiltered 200-row window.
+    const submitted = await createAttempt(testId, studentCookie);
+    const started = await startAttempt(submitted, studentCookie);
+    await answerCorrect(submitted, started, 'q?', 'a', studentCookie);
+    await submitAttempt(submitted, studentCookie);
+
+    const { TestAttempt } = await import('../src/models/TestAttempt.js');
+    await TestAttempt.insertMany(
+      Array.from({ length: 201 }, () => ({ testId, studentId: new Types.ObjectId(), status: 'GATED' }))
+    );
+
+    const unfiltered = await request(app).get(`/api/admin/attempts?testId=${testId}`).set('Cookie', adminCookie);
+    expect(unfiltered.status).toBe(200);
+    const unfilteredAttempts = unfiltered.body.attempts as Array<Record<string, any>>;
+    expect(unfilteredAttempts).toHaveLength(200);
+    expect(unfilteredAttempts.every((a) => a.status === 'GATED')).toBe(true);
+    expect(unfilteredAttempts.map((a) => a.id)).not.toContain(submitted);
+
+    // Filtering first means the single matching attempt still comes back.
+    const filtered = await request(app)
+      .get(`/api/admin/attempts?testId=${testId}&status=SUBMITTED`)
+      .set('Cookie', adminCookie);
+    expect(filtered.status).toBe(200);
+    const filteredAttempts = filtered.body.attempts as Array<Record<string, any>>;
+    expect(filteredAttempts).toHaveLength(1);
+    expect(filteredAttempts[0]).toMatchObject({ id: submitted, status: 'SUBMITTED' });
+  });
+
+  it('rejects an unknown status with the flat-details error shape', async () => {
+    const res = await request(app).get('/api/admin/attempts?status=DELETE_ME').set('Cookie', adminCookie);
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.details[0].field).toBe('status');
   });
 });
 

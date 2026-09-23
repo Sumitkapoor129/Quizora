@@ -703,8 +703,21 @@ adminRouter.delete(
 adminRouter.get(
   '/attempts',
   asyncHandler(async (req, res) => {
-    const { testId } = z.object({ testId: z.string().trim().optional() }).parse(req.query);
-    const filter = testId ? { testId } : {};
+    const { testId, status } = z
+      .object({
+        testId: z.string().trim().optional(),
+        status: z
+          .enum(['GATED', 'IN_PROGRESS', 'SUBMITTED', 'TIMED_OUT'], {
+            invalid_type_error: 'status must be one of GATED, IN_PROGRESS, SUBMITTED, TIMED_OUT.'
+          })
+          .optional()
+      })
+      .parse(req.query);
+    // Both filters apply BEFORE the cap so the 200 rows reflect the selection,
+    // not whatever the newest attempts happen to be.
+    const filter: FilterQuery<TestAttemptDoc> = {};
+    if (testId) filter.testId = testId;
+    if (status) filter.status = status;
     // _id embeds the creation timestamp — newest first without a schema change.
     // Hard cap keeps the global (all-students) list bounded as volume grows.
     // ponytail: no cursor pagination yet — add ?page=/cursor when the list can
@@ -762,20 +775,46 @@ type QuestionAgg = {
   correct: number;
 };
 
+/** Optional ISO date query param; empty string is treated as absent. */
+const optionalIsoDate = (name: string) =>
+  z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v === '' ? undefined : v))
+    .refine((v) => v === undefined || !Number.isNaN(new Date(v).getTime()), {
+      message: `${name} must be a valid ISO date (YYYY-MM-DD).`
+    });
+
 adminRouter.get(
   '/analytics',
   asyncHandler(async (req, res) => {
-    const { testId } = z
-      .object({ testId: z.string().trim().regex(/^[0-9a-fA-F]{24}$/, 'testId must be a valid ObjectId.').optional() })
+    const { testId, from, to } = z
+      .object({
+        testId: z.string().trim().regex(/^[0-9a-fA-F]{24}$/, 'testId must be a valid ObjectId.').optional(),
+        from: optionalIsoDate('from'),
+        to: optionalIsoDate('to')
+      })
       .parse(req.query);
 
     const testFilter: FilterQuery<TestAttemptDoc> = testId ? { testId } : {};
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
+    // Date range AND-combines with testId on the scored-attempts query only;
+    // attemptsToday stays the last-24h stat regardless of from/to.
+    const submittedAt: { $gte?: Date; $lte?: Date } = {};
+    if (from) submittedAt.$gte = new Date(from);
+    if (to) submittedAt.$lte = new Date(to);
+    const hasDateRange = from !== undefined || to !== undefined;
+
     // # ponytail: JS-side analysis over the 1000 most recent scored attempts —
     // switch to Mongo aggregation/$facet when volume exceeds ~1000 scored attempts.
     const [attempts, attemptsToday] = await Promise.all([
-      TestAttempt.find({ ...testFilter, status: { $in: ['SUBMITTED', 'TIMED_OUT'] } })
+      TestAttempt.find({
+        ...testFilter,
+        status: { $in: ['SUBMITTED', 'TIMED_OUT'] },
+        ...(hasDateRange ? { submittedAt } : {})
+      })
         .sort({ _id: -1 })
         .limit(1000),
       // attemptsToday counts ALL attempts (any status) submitted in the last 24h.

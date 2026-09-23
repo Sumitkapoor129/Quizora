@@ -399,6 +399,65 @@ describe('GET /api/admin/analytics ?testId filter', () => {
   });
 });
 
+// ---- 5b. from/to date-range filter ----
+
+describe('GET /api/admin/analytics ?from/?to date-range filter', () => {
+  it('bounds the scored-attempts window, leaves attemptsToday and absent params unchanged', async () => {
+    const testId = await publishTest('Analytics Window', [
+      { title: 'S', order: 0, durationSec: 60, questions: [singleQ(0, 'wq', 2, [opt(0, 'wa', true), opt(1, 'wb')])] }
+    ]);
+    const { attemptId } = await runAttempt(testId, studentCookie, [{ text: 'wq', optionTexts: ['wa'] }]);
+
+    const { TestAttempt } = await import('../src/models/TestAttempt.js');
+    // Backdate the sole attempt ~40 days so it only matches an explicit window.
+    await TestAttempt.updateOne(
+      { _id: attemptId },
+      { $set: { submittedAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000) } }
+    );
+
+    const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+
+    const inRange = await getAnalytics(`?testId=${testId}&from=${iso(45)}`);
+    expect(inRange.status).toBe(200);
+    expect((inRange.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
+    // attemptsToday ignores from/to — it stays a last-24h stat.
+    expect((inRange.body as AnalyticsBody).summary.attemptsToday).toBe(0);
+
+    const tooNew = await getAnalytics(`?testId=${testId}&from=${iso(10)}`);
+    expect(tooNew.status).toBe(200);
+    expect((tooNew.body as AnalyticsBody).summary.scoredAttempts).toBe(0);
+
+    const bounded = await getAnalytics(`?testId=${testId}&from=${iso(45)}&to=${iso(35)}`);
+    expect(bounded.status).toBe(200);
+    expect((bounded.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
+
+    const tooTight = await getAnalytics(`?testId=${testId}&from=${iso(45)}&to=${iso(45)}`);
+    expect(tooTight.status).toBe(200);
+    expect((tooTight.body as AnalyticsBody).summary.scoredAttempts).toBe(0);
+
+    // Absent params keep today's default behavior (the old attempt still counts).
+    const plain = await getAnalytics(`?testId=${testId}`);
+    expect(plain.status).toBe(200);
+    expect((plain.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
+
+    // Blank range params behave like "no range".
+    const blankFrom = await getAnalytics(`?testId=${testId}&from=`);
+    expect(blankFrom.status).toBe(200);
+    expect((blankFrom.body as AnalyticsBody).summary.scoredAttempts).toBe(1);
+  });
+
+  it('rejects malformed date params with the flat-details error shape', async () => {
+    const badFrom = await getAnalytics('?from=not-a-date');
+    expect(badFrom.status).toBe(400);
+    expect(badFrom.body.error.code).toBe('VALIDATION_ERROR');
+    expect(badFrom.body.error.details[0].field).toBe('from');
+
+    const badTo = await getAnalytics('?to=garbage');
+    expect(badTo.status).toBe(400);
+    expect(badTo.body.error.details[0].field).toBe('to');
+  });
+});
+
 // ---- 6. attemptsToday window ----
 
 describe('GET /api/admin/analytics attemptsToday', () => {
