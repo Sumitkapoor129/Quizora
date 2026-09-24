@@ -161,18 +161,18 @@ export default function Register() {
   return (
     <div className="auth-page">
       <div className="auth-column">
-        <Link to="/" className="brand-lockup auth-brand" aria-label="ExamPro home">
+        <Link to="/" className="brand-lockup auth-brand" aria-label="Quizora home">
           <span className="brand-mark" aria-hidden="true">
             EP
           </span>
-          <span className="brand-name">ExamPro</span>
+          <span className="brand-name">Quizora</span>
         </Link>
 
         <Card className="auth-card">
           {step === 1 ? (
             <>
               <h1 className="auth-title">Create your account</h1>
-              <p className="auth-sub">Start practicing with ExamPro in under a minute.</p>
+              <p className="auth-sub">Start practicing with Quizora in under a minute.</p>
 
               <form onSubmit={handleSubmit} noValidate>
                 <Field

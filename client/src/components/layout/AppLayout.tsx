@@ -161,11 +161,11 @@ export default function AppLayout() {
             </svg>
           </button>
 
-          <Link to={home} className="brand-lockup" aria-label="ExamPro home">
+          <Link to={home} className="brand-lockup" aria-label="Quizora home">
             <span className="brand-mark" aria-hidden="true">
               EP
             </span>
-            <span className="brand-name">ExamPro</span>
+            <span className="brand-name">Quizora</span>
           </Link>
 
           <div className="app-header__user">

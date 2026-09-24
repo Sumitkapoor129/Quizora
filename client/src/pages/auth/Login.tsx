@@ -86,11 +86,11 @@ export default function Login() {
   return (
     <div className="auth-page">
       <div className="auth-column">
-        <Link to="/" className="brand-lockup auth-brand" aria-label="ExamPro home">
+        <Link to="/" className="brand-lockup auth-brand" aria-label="Quizora home">
           <span className="brand-mark" aria-hidden="true">
             EP
           </span>
-          <span className="brand-name">ExamPro</span>
+          <span className="brand-name">Quizora</span>
         </Link>
 
         <Card className="auth-card">

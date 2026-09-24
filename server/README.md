@@ -43,7 +43,7 @@ cp .env.example .env   # then fill in MONGODB_URI and secrets
 | `MONGODB_URI`         | yes*     | —                     | Atlas/real Mongo URI. *Not needed for tests |
 | `JWT_ACCESS_SECRET`   | yes*     | —                     | Long random value. *Not needed for tests |
 | `JWT_REFRESH_SECRET`  | yes*     | —                     | Long random value. *Not needed for tests |
-| `CLIENT_ORIGIN`       | no       | `http://localhost:5173` | Allowed CORS origin / Origin check      |
+| `CLIENT_ORIGIN`       | no       | `http://localhost:5173` | Comma-separated allowed CORS origins / Origin check (e.g. `...`,https://quizora-sk.vercel.app) |
 | `COOKIE_SECURE`       | no       | `false`               | `true` in production (HTTPS only cookies)|
 
 ## API
