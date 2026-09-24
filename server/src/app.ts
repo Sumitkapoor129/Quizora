@@ -17,6 +17,10 @@ export type RouteMount = (app: Express) => void;
 export function createApp(mountRoutes?: RouteMount): Express {
   const app = express();
 
+  // Single trusted proxy hop (Render) — required so express-rate-limit can
+  // key on the real client IP from X-Forwarded-For instead of erroring.
+  app.set('trust proxy', 1);
+
   app.use(helmet());
   app.use(cors({ origin: env.CLIENT_ORIGINS, credentials: true }));
   app.use(express.json({ limit: '1mb' }));

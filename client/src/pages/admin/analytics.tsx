@@ -100,7 +100,7 @@ function groupPerQuestion(items: AdminAnalyticsPerQuestion[]): PerQuestionRow[] 
 }
 
 export default function Analytics() {
-  const [testId, setTestId] = useState<string | undefined>(undefined);
+  const [testId, setTestId] = useState('');
   const [range, setRange] = useState('');
   const [search, setSearch] = useState('');
 
@@ -113,7 +113,7 @@ export default function Analytics() {
     queryKey: ['admin', 'analytics', testId, range],
     queryFn: () => {
       const from = range ? new Date(Date.now() - Number(range) * 24 * 60 * 60 * 1000).toISOString() : undefined;
-      return api.admin.analytics(testId, from);
+      return api.admin.analytics(testId || undefined, from);
     },
   });
 
@@ -183,6 +183,14 @@ export default function Analytics() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <SelectField id="analytics-test" label="Test" value={testId} onChange={(e) => setTestId(e.target.value)}>
+            <option value="">All tests</option>
+            {visibleTests.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.title}
+              </option>
+            ))}
+          </SelectField>
           <SelectField id="analytics-range" label="Date range" value={range} onChange={(e) => setRange(e.target.value)}>
             {RANGE_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -191,28 +199,7 @@ export default function Analytics() {
             ))}
           </SelectField>
 
-          <div className="test-picker tests-list">
-            <button
-              type="button"
-              className={`btn btn--secondary btn--md picker-row${testId === undefined ? ' picker-row--active' : ''}`}
-              aria-pressed={testId === undefined}
-              onClick={() => setTestId(undefined)}
-            >
-              All tests
-            </button>
-            {visibleTests.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className={`btn btn--secondary btn--md picker-row${testId === t.id ? ' picker-row--active' : ''}`}
-                aria-pressed={testId === t.id}
-                onClick={() => setTestId(t.id)}
-              >
-                {t.title}
-              </button>
-            ))}
-            {search && visibleTests.length === 0 && <p className="field__hint">No tests match “{search}”.</p>}
-          </div>
+          {search && visibleTests.length === 0 && <p className="field__hint">No tests match “{search}”.</p>}
           {testsQuery.isError && (
             <div className="filter-error">
               <p className="field__error">Couldn&apos;t load the test list.</p>

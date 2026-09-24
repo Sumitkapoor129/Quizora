@@ -2082,24 +2082,6 @@ textarea.field__input {
   margin-top: 0;
 }
 
-/* ---------- Analytics test picker ---------- */
-.picker-row {
-  width: 100%;
-  justify-content: flex-start;
-  text-align: left;
-}
-
-.picker-row--active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.test-picker {
-  margin-top: var(--space-3);
-  max-height: 320px;
-  overflow-y: auto;
-}
-
 .violations__grid {
   display: flex;
   flex-wrap: wrap;

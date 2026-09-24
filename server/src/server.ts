@@ -1,6 +1,11 @@
+import { setDefaultResultOrder } from 'node:dns';
 import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { connect } from './db/connect.js';
+
+// Render has no outbound IPv6 route; smtp.gmail.com resolves to a AAAA record
+// first and SMTP connection would fail with ENETUNREACH. Prefer IPv4.
+setDefaultResultOrder('ipv4first');
 
 const app = createApp();
 

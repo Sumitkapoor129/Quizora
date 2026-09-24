@@ -139,48 +139,50 @@ describe('Analytics', () => {
     expect(await screen.findAllByText('—', { selector: '.stat-card__value' })).toHaveLength(4);
   });
 
-  it('loads analytics for the clicked test and returns to All tests', async () => {
+  it('loads analytics for the selected test and returns to All tests', async () => {
     vi.mocked(api.tests.list).mockResolvedValue({ tests });
     vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
     renderAnalytics();
 
     // Initial load: no testId, All tests selected.
-    expect(await screen.findByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'true');
-    expect(api.admin.analytics).toHaveBeenCalledTimes(1);
-    expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined, undefined);
+    const testPick = await screen.findByLabelText('Test');
+    await waitFor(() => {
+      expect(testPick).toHaveValue('');
+      expect(api.admin.analytics).toHaveBeenCalledTimes(1);
+      expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined, undefined);
+    });
 
     const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: 'Physics Quiz' }));
+    await user.selectOptions(testPick, 't2');
 
     await waitFor(() => {
       expect(api.admin.analytics).toHaveBeenCalledWith('t2', undefined);
-      expect(screen.getByRole('button', { name: 'Physics Quiz' })).toHaveAttribute('aria-pressed', 'true');
-      expect(screen.getByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'false');
+      expect(testPick).toHaveValue('t2');
     });
 
-    await user.click(screen.getByRole('button', { name: 'All tests' }));
+    await user.selectOptions(testPick, '');
     await waitFor(() => {
       expect(api.admin.analytics).toHaveBeenLastCalledWith(undefined, undefined);
-      expect(screen.getByRole('button', { name: 'All tests' })).toHaveAttribute('aria-pressed', 'true');
+      expect(testPick).toHaveValue('');
     });
   });
 
-  it('filters the test picker list by title search', async () => {
+  it('filters the test dropdown options by title search', async () => {
     vi.mocked(api.tests.list).mockResolvedValue({ tests });
     vi.mocked(api.admin.analytics).mockResolvedValue(analytics);
     renderAnalytics();
 
     const search = await screen.findByLabelText('Find a test');
     // Empty search: all tests listed and no no-match hint (zero-tests case must stay quiet).
-    expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Physics Quiz' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Algebra Midterm' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Physics Quiz' })).toBeInTheDocument();
     expect(screen.queryByText(/No tests match/)).not.toBeInTheDocument();
 
     const user = userEvent.setup();
     await user.type(search, 'algebra');
 
-    expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Physics Quiz' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Algebra Midterm' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Physics Quiz' })).not.toBeInTheDocument();
 
     // A search that matches nothing does show the hint.
     await user.type(search, 'zzz');
@@ -225,13 +227,13 @@ describe('Analytics', () => {
 
     await screen.findByText('42');
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'Physics Quiz' }));
+    await user.selectOptions(screen.getByLabelText('Test'), 't2');
 
-    // Filters (search box + test rows) survive the pending fetch instead of a full-page spinner.
+    // Filters (search box + test dropdown) survive the pending fetch instead of a full-page spinner.
     expect(screen.getByLabelText('Find a test')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'All tests' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Algebra Midterm' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Physics Quiz' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Test')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Algebra Midterm' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Physics Quiz' })).toBeInTheDocument();
     // The results area shows a compact loading indicator and no stale results.
     expect(screen.getByText('Loading analytics')).toBeInTheDocument();
     expect(screen.queryByText('Attempts scored')).not.toBeInTheDocument();
