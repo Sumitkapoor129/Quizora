@@ -21,6 +21,7 @@ function getTransporter(): Transporter {
       host: env.SMTP_HOST,
       port: env.SMTP_PORT,
       secure: env.SMTP_PORT === 465,
+      family: 4,
       // STARTTLS must be negotiated on the opportunistic 587 path; ignore on 465.
       requireTLS: true,
       auth: { user: env.SMTP_USER, pass: env.SMTP_PASS }
