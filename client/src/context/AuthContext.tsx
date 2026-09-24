@@ -20,17 +20,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('checking');
   const [expired, setExpired] = useState(false);
   const checkInFlight = useRef(false);
+  // Mirrors `session` so the 401-expiry handler can tell a real mid-session
+  // expiry (banner + veil) from a fresh anonymous boot (no cookies → 401).
+  const sessionRef = useRef<SessionResponse | null>(null);
+  const commitSession = useCallback((next: SessionResponse | null) => {
+    sessionRef.current = next;
+    setSession(next);
+  }, []);
 
   const checkSession = useCallback(async () => {
     if (checkInFlight.current) return;
     checkInFlight.current = true;
     try {
       const data = await api.auth.me();
-      setSession(data);
+      commitSession(data);
       setStatus('authenticated');
       setExpired(false);
     } catch {
-      setSession(null);
+      commitSession(null);
       setStatus('anonymous');
     } finally {
       checkInFlight.current = false;
@@ -44,26 +51,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [checkSession]);
 
   useEffect(() => {
-    onSessionExpired(() => setExpired(true));
+    onSessionExpired(() => {
+      // Fresh visitors with no cookies get a 401 on /me before any session
+      // exists; only a real session expiry should raise the banner + veil.
+      if (sessionRef.current) setExpired(true);
+    });
   }, []);
 
   const login = useCallback(async ({ email, password }: { email: string; password: string }) => {
     const data = await api.auth.login({ email, password });
-    setSession(data);
+    commitSession(data);
     setStatus('authenticated');
     setExpired(false);
     return data.user;
-  }, []);
+  }, [commitSession]);
 
   const verifyRegister = useCallback(
     async ({ name, email, password, code }: { name: string; email: string; password: string; code: string }) => {
       const data = await api.auth.verifyRegister({ name, email, password, code });
-      setSession(data);
+      commitSession(data);
       setStatus('authenticated');
       setExpired(false);
       return data.user;
     },
-    [],
+    [commitSession],
   );
 
   const logout = useCallback(async () => {
@@ -72,11 +83,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // Clear the local session even if the server call fails.
     } finally {
-      setSession(null);
+      commitSession(null);
       setStatus('anonymous');
       setExpired(false);
     }
-  }, []);
+  }, [commitSession]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
