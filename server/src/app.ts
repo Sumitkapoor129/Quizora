@@ -3,7 +3,11 @@ import { resolve } from 'node:path';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type Express, type Request, type Response } from 'express';
-import helmet from 'helmet';
+import helmetModule from 'helmet';
+// # ponytail: helmet ships separate ESM/CJS type files; Vercel compiles the
+// function as CJS and its .d.cts loses the callable default, so cast here.
+// Fix/lift when helmet adds a `types` condition to its exports map.
+const helmet = helmetModule as unknown as () => express.RequestHandler;
 import { env } from './config/env.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { notFound } from './middleware/notFound.js';
