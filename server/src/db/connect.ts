@@ -8,7 +8,10 @@ export async function connect(uri: string = env.MONGODB_URI): Promise<typeof mon
     return mongoose;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to connect to MongoDB at "${uri}": ${message}`);
+    // Never log credentials embedded in the connection string (Mongo Atlas
+    // URIs are user:pass@host) — they surface in server/cloud logs.
+    const safeUri = uri.replace(/\/\/[^@/]+@/, '//***@');
+    throw new Error(`Failed to connect to MongoDB at "${safeUri}": ${message}`);
   }
 }
 

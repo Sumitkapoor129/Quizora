@@ -151,8 +151,10 @@ const limiterOptions = {
   standardHeaders: true as const,
   legacyHeaders: false as const,
   message: limiterResponse,
-  // Rate limits are a production control; the test harness fires many
-  // requests per minute from one IP per file and would exhaust even 10/min.
+  // # ponytail: in-memory store is per-process. On Render (single long-lived
+  // process) it's a real control; on serverless each warm instance has its own
+  // counter, so limits are per-instance, not global. Reconnect to Upstash/
+  // Redis store or Vercel WAF rate rules if you need hard global limits.
   skip: () => env.NODE_ENV === 'test'
 };
 

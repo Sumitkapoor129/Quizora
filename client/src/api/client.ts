@@ -31,8 +31,14 @@ import type {
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
 
-/** Absolute URL for a relative asset path (e.g. `/uploads/x.png`). */
-export const assetUrl = (path?: string | null): string => (path ? `${BASE_URL}${path}` : '');
+/**
+ * Absolute URL for a cloud-served asset, or an API origin-prefixed URL for a
+ * relative path (e.g. `/uploads/x.png`). Cloudinary returns absolute URLs.
+ */
+export const assetUrl = (path?: string | null): string => {
+  if (!path) return '';
+  return path.startsWith('http://') || path.startsWith('https://') ? path : `${BASE_URL}${path}`;
+};
 
 export class ApiError extends Error {
   code: string;

@@ -27,6 +27,13 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   // Directory for admin-uploaded test images (relative to process cwd).
   UPLOAD_DIR: z.string().default('uploads'),
+  // Cloudinary (image storage). All three optional: when present, uploads are
+  // stored on Cloudinary and imageUrl comes back as an absolute URL; otherwise
+  // they fall back to the local UPLOAD_DIR (dev). Vercel's filesystem is
+  // ephemeral, so production deployments must set these.
+  CLOUDINARY_CLOUD_NAME: z.string().optional(),
+  CLOUDINARY_API_KEY: z.string().optional(),
+  CLOUDINARY_API_SECRET: z.string().optional(),
   // SMTP (email OTP delivery). All optional so the server boots and tests run
   // before creds exist; the mailer falls back to a dev console log until then.
   SMTP_HOST: z.string().default('smtp.gmail.com'),
@@ -49,19 +56,29 @@ if (!isTest) {
   if (!parsed.data.MONGODB_URI) {
     missing.push({
       key: 'MONGODB_URI',
-      hint: "MONGODB_URI is required. Set it in server/.env (e.g. an Atlas connection string). Tests use mongodb-memory-server and don't need it."
+      hint: "MONGODB_URI is required. Set it in server/.env locally or in the Vercel project's environment variables (e.g. an Atlas connection string). Tests use mongodb-memory-server and don't need it."
     });
   }
   if (!parsed.data.JWT_ACCESS_SECRET) {
     missing.push({
       key: 'JWT_ACCESS_SECRET',
-      hint: 'JWT_ACCESS_SECRET is required. Set a long random value in server/.env.'
+      hint: 'JWT_ACCESS_SECRET is required. Set a long random value in server/.env locally or in the Vercel project settings.'
     });
   }
   if (!parsed.data.JWT_REFRESH_SECRET) {
     missing.push({
       key: 'JWT_REFRESH_SECRET',
-      hint: 'JWT_REFRESH_SECRET is required. Set a long random value in server/.env.'
+      hint: 'JWT_REFRESH_SECRET is required. Set a long random value in server/.env locally or in the Vercel project settings.'
+    });
+  }
+  // Vercel's filesystem is ephemeral, so production uploads need Cloudinary.
+  if (
+    parsed.data.NODE_ENV === 'production' &&
+    (!parsed.data.CLOUDINARY_CLOUD_NAME || !parsed.data.CLOUDINARY_API_KEY || !parsed.data.CLOUDINARY_API_SECRET)
+  ) {
+    missing.push({
+      key: 'CLOUDINARY_*',
+      hint: 'CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET are required in production (Vercel storage is ephemeral). Set them in the Vercel project settings.'
     });
   }
   if (missing.length > 0) {
@@ -84,6 +101,9 @@ export const env = {
   CLIENT_ORIGINS: parsed.data.CLIENT_ORIGIN,
   COOKIE_SECURE: parsed.data.COOKIE_SECURE,
   UPLOAD_DIR: parsed.data.UPLOAD_DIR,
+  CLOUDINARY_CLOUD_NAME: parsed.data.CLOUDINARY_CLOUD_NAME ?? '',
+  CLOUDINARY_API_KEY: parsed.data.CLOUDINARY_API_KEY ?? '',
+  CLOUDINARY_API_SECRET: parsed.data.CLOUDINARY_API_SECRET ?? '',
   SMTP_HOST: parsed.data.SMTP_HOST,
   SMTP_PORT: parsed.data.SMTP_PORT,
   SMTP_USER: parsed.data.SMTP_USER ?? '',

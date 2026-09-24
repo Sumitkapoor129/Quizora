@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { v2 as cloudinary } from 'cloudinary';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import { type FilterQuery } from 'mongoose';
@@ -15,6 +16,17 @@ import { User } from '../models/User.js';
 
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 const uploadDir = resolve(env.UPLOAD_DIR);
+const cloudinaryConfigured = Boolean(
+  env.CLOUDINARY_CLOUD_NAME && env.CLOUDINARY_API_KEY && env.CLOUDINARY_API_SECRET
+);
+
+if (cloudinaryConfigured) {
+  cloudinary.config({
+    cloud_name: env.CLOUDINARY_CLOUD_NAME,
+    api_key: env.CLOUDINARY_API_KEY,
+    api_secret: env.CLOUDINARY_API_SECRET
+  });
+}
 
 const TITLE_REQUIRED = 'Test title is required.';
 const SECTION_TITLE_REQUIRED = 'Section title is required.';
@@ -627,8 +639,24 @@ adminRouter.post(
     }
 
     const name = `${randomUUID()}${type.ext}`;
-    await writeFile(resolve(uploadDir, name), file.buffer);
-    res.status(201).json({ url: `/uploads/${name}` });
+    let url: string;
+    if (cloudinaryConfigured) {
+      const result = await new Promise<{ secure_url: string }>((resolvePromise, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'exampro', resource_type: 'image', unique_filename: true },
+          (error, result) => {
+            if (error) reject(error);
+            else resolvePromise(result!);
+          }
+        );
+        stream.end(file.buffer);
+      });
+      url = result.secure_url;
+    } else {
+      await writeFile(resolve(uploadDir, name), file.buffer);
+      url = `/uploads/${name}`;
+    }
+    res.status(201).json({ url });
   })
 );
 

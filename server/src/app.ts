@@ -36,9 +36,15 @@ export function createApp(mountRoutes?: RouteMount): Express {
   app.use('/api/student', studentRouter);
 
   // Admin-uploaded test images. Extension is server-generated from sniffed
-  // magic bytes, so static content-type lookup by extension is safe.
+  // magic bytes, so static content-type lookup by extension is safe. On
+  // serverless (Vercel) the filesystem is ephemeral/read-only — set
+  // UPLOAD_DIR=/tmp and rely on Cloudinary when configured.
   const uploadDir = resolve(env.UPLOAD_DIR);
-  mkdirSync(uploadDir, { recursive: true });
+  try {
+    mkdirSync(uploadDir, { recursive: true });
+  } catch {
+    // Read-only fs (serverless) — static /uploads just serves nothing.
+  }
   app.use('/uploads', express.static(uploadDir, { index: false, maxAge: '30d', immutable: true }));
 
   // Test hook: routes mounted here sit before notFound/errorHandler.
