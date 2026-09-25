@@ -152,5 +152,98 @@ Spec: `docs/superpowers/specs/2026-09-25-google-oauth-design.md` (binding)
   (needs `Path=/`, trades the scoping); log-reason length is now capped at 200.
 - Next: Task 6 (client Google-only auth UI). Server is signable; nothing calls it yet.
 
+## Task 6 — client Google-only auth UI (`f1ed5fd`)
+
+- Tests written first and observed failing for the right reasons (no Google
+  link existed; the password section was still on the Profile page).
+- `Login` is now one card: a single `Continue with Google` anchor whose href is
+  `api.auth.googleStartUrl(next)`, plus the `?oauth=error` banner
+  (`role="alert"`, "Sign-in didn't complete. Please try again."). `safeNext`,
+  the brand lockup and the already-authenticated early return all survive.
+- The Google "G" is **Google's own hosted brand asset**, downloaded from
+  `https://developers.google.com/static/identity/images/branding_guideline_sample_lt_sq_sl.svg`
+  (the asset linked from `developers.google.com/identity/branding-guidelines`),
+  copied verbatim, with the source URL cited in the code. Deliberate deviation
+  from the plan: the plan named the *older* palette (`#EA4335`/`#FBBC05`), but
+  Google's current guidance is "use only the newest Google G" — the asset served
+  today is `#4285F4`/`#34A853`/`#FBBC04`/`#E94235`, so that is what ships. The
+  glyph is drawn at 10..30 in the asset's 40x40 tile; a `translate(-10 -10)` moves
+  that exact geometry into the 20x20 viewBox. Nothing redrawn, no base64 blob.
+- `api.auth` is `googleStartUrl`/`logout`/`me` only. `AuthContextValue` is
+  `{ user, sessionExpiresAt, status, expired, logout }`. `OtpSentResponse`
+  deleted, `ProfileUpdateInput` name-only, `/register` → redirect to `/login`,
+  forgot/reset fall through to NotFound, and the Register/ForgotPassword/
+  ResetPassword pages plus their tests are deleted.
+- **Client 126 → 121 / 18 files.** `npm run typecheck` exit 0, `npm run build`
+  exit 0. CSS 29.14 → 29.01 kB (dead `.auth-footer` removed; `.auth-actions` is
+  still live in AccessDenied/NotFound). JS flat at ~364 kB / 107 kB gzip — the
+  deleted pages and the inline SVG roughly cancel, so "smaller bundle" is only
+  true of the CSS, not the JS.
+- Review round (1 IMPORTANT, fixed): the client `safeNext` was a weaker twin of
+  the server's — it accepted `/\t/evil.com`, which the URL parser strips into a
+  protocol-relative `https://evil.com/`. The Google href was never at risk
+  (`encodeURIComponent` escapes the tab and the server re-validates twice), but
+  the already-authenticated `<Navigate to={next}>` sink never reaches the server
+  at all. The client check is now byte-identical to `server/src/routes/auth.ts`.
+  Mutation-verified: restoring the weak `raw.includes('\\')` version fails 2 of
+  the 13 new Login tests.
+- Also fixed from the review: each `safeNext` rejection branch now has a case
+  (5 unsafe-`next` variants, plus the authenticated-navigation one), the
+  accessible name is pinned to the exact string `Continue with Google`, the
+  provenance comment cites a URL that resolves, and `context.md` no longer calls
+  the profile endpoint "name / password".
+- Accepted, not fixed (deliberate): a failed sign-in drops `?next`, so a retry
+  lands on the role home instead of the original deep link. The user is still
+  signed in and the destination is recoverable by hand; preserving it would mean
+  re-touching reviewed Task 5 redirect code. `next=` is also preserved across the
+  failure only if the operator's Google consent screen is re-entered.
+- Double-clicking the Google link starts two flows and the second overwrites the
+  `oauthState` cookie, so the first callback fails state validation. It fails
+  closed to `?oauth=error` with no security impact.
+
+## Task 7 — whole-branch verification
+
+All gates pass from a clean state:
+
+| Gate | Result |
+| ---- | ------ |
+| `server && npm test` | 170 / 13 files, exit 0 |
+| `server && npm run typecheck` | exit 0 |
+| `server && npm run build` | exit 0 |
+| `client && npm test` | 121 / 18 files, exit 0 |
+| `client && npm run typecheck` | exit 0 |
+| `client && npm run build` | exit 0 |
+| `server && npm ls argon2 nodemailer` | `(empty)`, exit 1 — the non-zero exit is the pass condition |
+| `client/vercel.json` | unchanged; three rewrites intact, the callback rides `/api/(.*)` |
+
+- Standalone strict check of `server/tests/oauth.test.ts` (which `tsc` excludes):
+  exit 0. Its `okProfile(over: Record<string, unknown>)` helper is deliberately
+  untyped so the malformed-`email_verified` test can inject a runtime-invalid
+  value, so there is no hidden type error behind the passing suite.
+- Doc drift fixed here: `server/README.md` claimed "no sign-in route exists" and
+  12 files / 143 tests; `server/.env.example` and the README advertised
+  `quizora-sk.vercel.app` while the spec, plan, tests, `vercel.json` and
+  `context.md` all use `quizora-rho.vercel.app` (confirmed live: the Vercel
+  frontend is `quizora-rho`, the Render backend is `quizora-ppfp`).
+- Merge gate from Task 4 is now satisfied: server, client and docs land together.
+
+## Deploy checklist (user actions — not code, not attempted from here)
+
+1. **Google Cloud**: create a *Web application* OAuth client. Authorized redirect
+   URIs, exactly:
+   - `https://quizora-rho.vercel.app/api/auth/oauth/google/callback`
+   - `http://localhost:3001/api/auth/oauth/google/callback` (local dev)
+2. **Render env — set BEFORE deploying the server**, or the new fail-fast checks
+   crash-loop the service: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+   `OAUTH_CALLBACK_URL=https://quizora-rho.vercel.app/api/auth/oauth/google/callback`,
+   `ADMIN_EMAILS=<your email>`, `COOKIE_SECURE=true`, and `CLIENT_ORIGIN` with
+   `https://quizora-rho.vercel.app` as the **first** entry. Delete the stale
+   `SMTP_*` variables.
+3. **Deploy order**: server first (it must answer the callback), then the client.
+   Do not deploy the client alone — it now only knows the Google flow.
+4. **Optional cleanup**: `$unset` the now-unused `passwordHash` field on existing
+   users; `User.googleId` links them on first Google sign-in by email.
+
+
 
 
