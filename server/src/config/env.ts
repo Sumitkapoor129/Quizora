@@ -30,7 +30,7 @@ const envSchema = z.object({
   // production fail-fast below is what guarantees they are set where it counts.
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
-  OAUTH_CALLBACK_URL: z.string().url().optional(),
+  OAUTH_CALLBACK_URL: z.string().url().refine((u) => u.startsWith('http'), 'Must be an http(s) URL.').optional(),
   // Comma-separated emails that resolve to role ADMIN on every Google sign-in.
   ADMIN_EMAILS: z.string().default(''),
   COOKIE_SECURE: z

@@ -3,6 +3,7 @@ import type { CookieOptions, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { RefreshSession } from '../models/RefreshSession.js';
+import type { UserRole } from '../models/User.js';
 
 export const ACCESS_TTL_MS = 15 * 60 * 1000;
 export const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -12,7 +13,7 @@ export interface SessionUser {
   _id: unknown;
   email: string;
   name: string;
-  role: string;
+  role: UserRole;
 }
 
 export function hashToken(token: string): string {
@@ -56,7 +57,7 @@ export function authBody(user: SessionUser, sessionExpiresAt: Date): object {
   };
 }
 
-/** Creates the refresh session and sets both auth cookies. Returns the expiry. */
+/** Sets the cookies here so every caller (including the OAuth callback) shares one cookie pair. */
 export async function issueSession(user: SessionUser, res: Response): Promise<Date> {
   const { raw, hash } = newRefreshToken();
   const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
