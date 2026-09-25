@@ -17,23 +17,12 @@ afterAll(async () => {
 });
 
 describe('mongodb via mongodb-memory-server', () => {
-  it('creates a user', async () => {
-    const user = await User.create({
-      email: 'alice@example.com',
-      name: 'Alice',
-      passwordHash: 'not-a-real-hash'
-    });
-    expect(user.email).toBe('alice@example.com');
-    expect(user.name).toBe('Alice');
+  it('creates a user without a password and rejects a duplicate googleId', async () => {
+    const user = await User.create({ email: 'nopass@example.com', name: 'No Pass', googleId: 'sub-1' });
     expect(user.role).toBe('STUDENT');
-    expect(user.passwordHash).toBe('not-a-real-hash');
-  });
-
-  it('rejects a duplicate unique email with the duplicate-key error', async () => {
-    const email = 'dup@example.com';
-    await User.create({ email, name: 'One', passwordHash: 'x' });
-    await expect(User.create({ email, name: 'Two', passwordHash: 'y' })).rejects.toMatchObject({
-      code: 11000
-    });
+    expect(user.googleId).toBe('sub-1');
+    await expect(
+      User.create({ email: 'other@example.com', name: 'Other', googleId: 'sub-1' })
+    ).rejects.toMatchObject({ code: 11000 });
   });
 });

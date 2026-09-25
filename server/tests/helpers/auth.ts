@@ -1,23 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import argon2 from 'argon2';
 
 // The `src` imports below are deliberately dynamic. Test files assign
 // process.env.UPLOAD_DIR in beforeAll and then import `src` on purpose, so a
 // static import here would evaluate config/env.ts (via services/session.ts)
 // before that assignment and freeze UPLOAD_DIR at its 'uploads' default.
-
-/**
- * Seeded users still get a real password hash: the schema requires one, and
- * student-portal.test.ts's password-change tests verify it. Temporary — the
- * password task deletes this, the argon2 import and those tests together.
- */
-export const TEST_PASSWORD = 'password123';
-
-let passwordHash: string | undefined;
-/** argon2 is deliberately slow, so hash once per test file and reuse it. */
-async function testPasswordHash(): Promise<string> {
-  return (passwordHash ??= await argon2.hash(TEST_PASSWORD, { type: argon2.argon2id }));
-}
 
 export interface SeededUser {
   id: string;
@@ -46,8 +32,7 @@ export async function seedUser(opts: SeedOptions = {}): Promise<SeededUser> {
   const user = await User.create({
     email,
     name: opts.name ?? 'Test User',
-    role: opts.role ?? 'STUDENT',
-    passwordHash: await testPasswordHash()
+    role: opts.role ?? 'STUDENT'
   });
   return { id: String(user._id), email, name: user.name, role: user.role };
 }

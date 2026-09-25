@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import argon2 from 'argon2';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import mongoose from 'mongoose';
 import { z } from 'zod';
@@ -10,6 +9,7 @@ import { Resource } from '../models/Resource.js';
 import { Test } from '../models/Test.js';
 import { TestAttempt, type TestAttemptDoc } from '../models/TestAttempt.js';
 import { User } from '../models/User.js';
+import { authBody } from '../services/session.js';
 
 // ---- Zod bodies ----
 
@@ -732,29 +732,15 @@ studentRouter.get(
 
 const profileUpdateSchema = z
   .object({
-    name: z.string({ invalid_type_error: 'Name must be a string.' }).trim().min(1, 'Name is required.').optional(),
-    currentPassword: z
-      .string({ invalid_type_error: 'Current password must be a string.' })
-      .min(1, 'Current password is required.')
-      .optional(),
-    newPassword: z
-      .string({ invalid_type_error: 'New password must be a string.' })
-      .min(8, 'Password must be at least 8 characters.')
-      .optional()
+    name: z.string({ invalid_type_error: 'Name must be a string.' }).trim().min(1, 'Name is required.').optional()
   })
   .superRefine((body, ctx) => {
-    if (body.name === undefined && body.newPassword === undefined) {
+    // A body with nothing to apply is a client bug, not an update.
+    if (body.name === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['name'],
-        message: 'Provide a name or a new password.'
-      });
-    }
-    if (body.newPassword !== undefined && body.currentPassword === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['currentPassword'],
-        message: 'Current password is required.'
+        message: 'Provide a name.'
       });
     }
   });
@@ -763,17 +749,9 @@ studentRouter.patch(
   '/profile',
   asyncHandler(async (req, res) => {
     const body = profileUpdateSchema.parse(req.body);
-    const user = await User.findById(req.user!.id).select('+passwordHash');
+    const user = await User.findById(req.user!.id);
     if (!user) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication required.');
 
-    if (body.newPassword !== undefined) {
-      const ok = await argon2.verify(user.passwordHash, body.currentPassword!).catch(() => false);
-      if (!ok) {
-        throw new AppError(400, 'INVALID_CREDENTIALS', 'Current password is incorrect.');
-      }
-      user.passwordHash = await argon2.hash(body.newPassword, { type: argon2.argon2id });
-      // ponytail: refresh sessions stay alive on password change — hard-revoke later if required.
-    }
     if (body.name !== undefined && body.name !== user.name) user.name = body.name;
     await user.save();
 
@@ -785,9 +763,6 @@ studentRouter.patch(
     }).sort({ createdAt: -1 });
     if (!session) throw new AppError(401, 'UNAUTHENTICATED', 'Authentication required.');
 
-    res.json({
-      user: { id: String(user._id), email: user.email, name: user.name, role: user.role },
-      sessionExpiresAt: session.expiresAt.toISOString()
-    });
+    res.json(authBody(user, session.expiresAt));
   })
 );

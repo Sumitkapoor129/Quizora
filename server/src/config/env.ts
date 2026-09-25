@@ -21,7 +21,6 @@ const envSchema = z.object({
   // run without a real MongoDB).
   MONGODB_URI: z.string().optional(),
   JWT_ACCESS_SECRET: secretSchema,
-  JWT_REFRESH_SECRET: secretSchema,
   CLIENT_ORIGIN: z
     .string()
     .default('http://localhost:5173')
@@ -38,14 +37,7 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   // Directory for admin-uploaded test images (relative to process cwd).
-  UPLOAD_DIR: z.string().default('uploads'),
-  // SMTP (email OTP delivery). All optional so the server boots and tests run
-  // before creds exist; the mailer falls back to a dev console log until then.
-  SMTP_HOST: z.string().default('smtp.gmail.com'),
-  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
-  MAIL_FROM: z.string().optional()
+  UPLOAD_DIR: z.string().default('uploads')
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -68,12 +60,6 @@ if (!isTest) {
     missing.push({
       key: 'JWT_ACCESS_SECRET',
       hint: 'JWT_ACCESS_SECRET is required. Set a long random value in server/.env.'
-    });
-  }
-  if (!parsed.data.JWT_REFRESH_SECRET) {
-    missing.push({
-      key: 'JWT_REFRESH_SECRET',
-      hint: 'JWT_REFRESH_SECRET is required. Set a long random value in server/.env.'
     });
   }
   if (missing.length > 0) {
@@ -110,17 +96,11 @@ export const env = {
   PORT: parsed.data.PORT,
   MONGODB_URI: parsed.data.MONGODB_URI ?? '',
   JWT_ACCESS_SECRET: parsed.data.JWT_ACCESS_SECRET ?? (isTest ? 'test-access-secret' : ''),
-  JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET ?? (isTest ? 'test-refresh-secret' : ''),
   CLIENT_ORIGINS: parsed.data.CLIENT_ORIGIN,
   GOOGLE_OAUTH_CLIENT_ID: parsed.data.GOOGLE_OAUTH_CLIENT_ID ?? (isTest ? 'test-google-client-id' : ''),
   GOOGLE_OAUTH_CLIENT_SECRET: parsed.data.GOOGLE_OAUTH_CLIENT_SECRET ?? (isTest ? 'test-google-client-secret' : ''),
   OAUTH_CALLBACK_URL: parsed.data.OAUTH_CALLBACK_URL ?? (isTest ? 'http://localhost:3001/api/auth/oauth/google/callback' : ''),
   ADMIN_EMAIL_SET: parseEmailList(parsed.data.ADMIN_EMAILS),
   COOKIE_SECURE: parsed.data.COOKIE_SECURE,
-  UPLOAD_DIR: parsed.data.UPLOAD_DIR,
-  SMTP_HOST: parsed.data.SMTP_HOST,
-  SMTP_PORT: parsed.data.SMTP_PORT,
-  SMTP_USER: parsed.data.SMTP_USER ?? '',
-  SMTP_PASS: parsed.data.SMTP_PASS ?? '',
-  MAIL_FROM: parsed.data.MAIL_FROM ?? ''
+  UPLOAD_DIR: parsed.data.UPLOAD_DIR
 } as const;

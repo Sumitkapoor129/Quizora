@@ -5,10 +5,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
-import { createTestSession, TEST_PASSWORD } from './helpers/auth.js';
-
-const PASSWORD = TEST_PASSWORD;
-const NEW_PASSWORD = 'newpassword9';
+import { createTestSession } from './helpers/auth.js';
 
 const ATTEMPT_KEYS = ['attemptId', 'date', 'marksEarned', 'percent', 'status', 'testId', 'testTitle', 'totalMarks'];
 
@@ -196,61 +193,20 @@ describe('PATCH /api/student/profile', () => {
     expect(me.body.user.name).toBe('Renamed Student');
   });
 
-  it('changes the password when the current password verifies', async () => {
+  it('updates the name and ignores unknown password fields', async () => {
+    const session = await createTestSession();
     const res = await request(app)
       .patch('/api/student/profile')
-      .set('Cookie', student2Cookie)
-      .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
-
+      .set('Cookie', session.accessCookie)
+      .send({ name: 'Renamed', currentPassword: 'whatever', newPassword: 'longenough' });
     expect(res.status).toBe(200);
-    expect(res.body.user).toEqual({
-      id: expect.any(String),
-      email: 's2@example.com',
-      name: 'Student Two',
-      role: 'STUDENT'
-    });
-
-    // The new password logs in; the old one no longer does.
-    const loginNew = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 's2@example.com', password: NEW_PASSWORD });
-    expect(loginNew.status).toBe(200);
-    const loginOld = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 's2@example.com', password: PASSWORD });
-    expect(loginOld.status).toBe(401);
+    expect(res.body.user.name).toBe('Renamed');
   });
 
-  it('rejects a wrong current password with 400 INVALID_CREDENTIALS', async () => {
-    const res = await request(app)
-      .patch('/api/student/profile')
-      .set('Cookie', studentCookie)
-      .send({ currentPassword: 'wrong-password', newPassword: 'anotherpassword1' });
-
+  it('rejects a body that changes nothing with 400 VALIDATION_ERROR', async () => {
+    const res = await request(app).patch('/api/student/profile').set('Cookie', studentCookie).send({});
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({
-      error: { code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' }
-    });
-  });
-
-  it('rejects a body with no name or password, and a too-short newPassword (400)', async () => {
-    const empty = await request(app).patch('/api/student/profile').set('Cookie', studentCookie).send({});
-    expect(empty.status).toBe(400);
-    expect(empty.body.error.code).toBe('VALIDATION_ERROR');
-    expect(empty.body.error.details).toContainEqual({
-      field: 'name',
-      message: 'Provide a name or a new password.'
-    });
-
-    const short = await request(app)
-      .patch('/api/student/profile')
-      .set('Cookie', studentCookie)
-      .send({ currentPassword: PASSWORD, newPassword: 'short' });
-    expect(short.status).toBe(400);
-    expect(short.body.error.code).toBe('VALIDATION_ERROR');
-    expect(short.body.error.details).toContainEqual({
-      field: 'newPassword',
-      message: 'Password must be at least 8 characters.'
-    });
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.details).toContainEqual({ field: 'name', message: 'Provide a name.' });
   });
 });

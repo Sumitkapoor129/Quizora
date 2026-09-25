@@ -1,15 +1,10 @@
-import { randomInt, timingSafeEqual } from 'node:crypto';
-import argon2 from 'argon2';
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router, type CookieOptions, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import { z } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
 import { authenticate } from '../middleware/auth.js';
-import { EmailOtp, type EmailOtpPurpose } from '../models/EmailOtp.js';
 import { RefreshSession } from '../models/RefreshSession.js';
 import { User } from '../models/User.js';
-import { sendMail } from '../services/mailer.js';
 import {
   REFRESH_TTL_MS,
   authBody,
@@ -24,76 +19,6 @@ import {
 // Replays of a just-rotated token within this window are usually two tabs
 // sharing the cookie racing on refresh, not theft. Old replays still revoke.
 const REPLAY_REVOKE_GRACE_MS = 10_000;
-
-const NAME_REQUIRED = 'Name is required.';
-const EMAIL_REQUIRED = 'Email is required.';
-const EMAIL_INVALID = 'Enter a valid email address.';
-const PASSWORD_INVALID = 'Password must be at least 8 characters.';
-const CODE_INVALID = 'Enter the 6-digit code.';
-const OTP_INVALID_MESSAGE = 'Invalid verification code.';
-const OTP_EXPIRED_MESSAGE = 'This code has expired. Request a new one.';
-const OTP_ATTEMPTS_MESSAGE = 'Too many failed attempts. Request a new code.';
-
-const OTP_TTL_MS = 10 * 60 * 1000;
-const OTP_ATTEMPTS = 5;
-
-const emailField = z
-  .string({ required_error: EMAIL_REQUIRED, invalid_type_error: EMAIL_REQUIRED })
-  .trim()
-  .toLowerCase()
-  .superRefine((value, ctx) => {
-    if (!value) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: EMAIL_REQUIRED });
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: EMAIL_INVALID });
-    }
-  });
-
-const registerSchema = z.object({
-  name: z
-    .string({ required_error: NAME_REQUIRED, invalid_type_error: NAME_REQUIRED })
-    .trim()
-    .min(1, NAME_REQUIRED),
-  email: emailField,
-  password: z
-    .string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID })
-    .min(8, PASSWORD_INVALID)
-});
-
-const codeField = z
-  .string({ required_error: CODE_INVALID, invalid_type_error: CODE_INVALID })
-  .regex(/^\d{6}$/, CODE_INVALID);
-
-const registerVerifySchema = z.object({
-  name: registerSchema.shape.name,
-  email: emailField,
-  password: registerSchema.shape.password,
-  code: codeField
-});
-
-const forgotPasswordSchema = z.object({
-  email: emailField
-});
-
-const resetPasswordSchema = z.object({
-  email: emailField,
-  code: codeField,
-  newPassword: z
-    .string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID })
-    .min(8, PASSWORD_INVALID)
-});
-
-const loginSchema = z.object({
-  email: emailField,
-  password: z.string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID }).min(1, PASSWORD_INVALID)
-});
-
-// Verify against a constant hash on unknown email so login response time does
-// not reveal whether an account exists (no user enumeration).
-let dummyHashPromise: Promise<string> | undefined;
-function getDummyHash(): Promise<string> {
-  return (dummyHashPromise ??= argon2.hash('exampro-timing-equalizer', { type: argon2.argon2id }));
-}
 
 function isDuplicateKey(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000;
@@ -120,176 +45,9 @@ const limiterOptions = {
   skip: () => env.NODE_ENV === 'test'
 };
 
-// One limiter instance per route: sharing an instance would pool their budgets.
-// Sends are throttled harder than verifies: a 6-digit code has a ~1e6 keyspace
-// and send is the only client-controlled way to mint codes.
-export const OTP_SEND_LIMIT = 5;
-export const OTP_VERIFY_LIMIT = 10;
-const registerLimiter = rateLimit({ ...limiterOptions, limit: OTP_SEND_LIMIT });
-const registerVerifyLimiter = rateLimit({ ...limiterOptions, limit: OTP_VERIFY_LIMIT });
-const forgotPasswordLimiter = rateLimit({ ...limiterOptions, limit: OTP_SEND_LIMIT });
-const resetPasswordLimiter = rateLimit({ ...limiterOptions, limit: OTP_VERIFY_LIMIT });
-const loginLimiter = rateLimit({ ...limiterOptions, limit: 10 });
 const refreshLimiter = rateLimit({ ...limiterOptions, limit: 60 });
 
-// --- Email OTP helpers -----------------------------------------------------
-
-function generateOtpCode(): string {
-  return String(randomInt(100000, 1000000));
-}
-
-async function storeEmailOtp(email: string, purpose: EmailOtpPurpose, code: string): Promise<Date> {
-  const expiresAt = new Date(Date.now() + OTP_TTL_MS);
-  // Atomic upsert: a new send replaces the single active OTP for (email,
-  // purpose) in one step, so concurrent sends cannot leave two live codes
-  // (the (email, purpose) unique index backs this up).
-  await EmailOtp.findOneAndUpdate(
-    { email, purpose },
-    { $set: { codeHash: hashToken(code), expiresAt, attemptsLeft: OTP_ATTEMPTS } },
-    { upsert: true }
-  );
-  return expiresAt;
-}
-
-async function sendOtpEmail(to: string, code: string): Promise<void> {
-  await sendMail({
-    to,
-    subject: 'Your ExamPro verification code',
-    text: `Your ExamPro verification code is ${code}. It expires in 10 minutes.`
-  });
-}
-
-/** Verifies a code against the active OTP for (email, purpose); consumes it on success. */
-async function verifyEmailOtp(email: string, purpose: EmailOtpPurpose, code: string): Promise<void> {
-  const otp = await EmailOtp.findOne({ email, purpose }).select('+codeHash');
-  if (!otp) throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
-  if (otp.expiresAt.getTime() < Date.now()) throw new AppError(400, 'OTP_EXPIRED', OTP_EXPIRED_MESSAGE);
-
-  const expected = Buffer.from(otp.codeHash, 'hex');
-  const actual = Buffer.from(hashToken(code), 'hex');
-  if (!timingSafeEqual(expected, actual)) {
-    // Atomic check-and-decrement: only guesses arriving while attemptsLeft > 0
-    // consume a guess, so parallel wrong guesses cannot pierce the cap and the
-    // counter can never go negative. A no-op means the code is already spent.
-    const res = await EmailOtp.updateOne(
-      { _id: otp._id, attemptsLeft: { $gt: 0 } },
-      { $inc: { attemptsLeft: -1 } }
-    );
-    if (res.modifiedCount === 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
-    throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
-  }
-
-  // An exhausted code is dead even when the digits match.
-  if (otp.attemptsLeft <= 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
-
-  // One-time use: a replayed code then fails as OTP_INVALID.
-  await otp.deleteOne();
-}
-
 export const authRouter = Router();
-
-authRouter.post(
-  '/register',
-  registerLimiter,
-  asyncHandler(async (req, res) => {
-    const { name, email, password } = registerSchema.parse(req.body);
-
-    // Step 1 of two: only the OTP is sent here. No account is created and no
-    // session is issued until the code verifies at /register/verify.
-    if (await User.exists({ email })) {
-      throw new AppError(409, 'EMAIL_TAKEN', 'An account with this email already exists.');
-    }
-
-    const code = generateOtpCode();
-    // Store before sending: an email that arrives must always be verifiable.
-    const otpExpiresAt = await storeEmailOtp(email, 'REGISTER', code);
-    await sendOtpEmail(email, code);
-    res.status(201).json({ email, otpExpiresAt: otpExpiresAt.toISOString() });
-  })
-);
-
-authRouter.post(
-  '/register/verify',
-  registerVerifyLimiter,
-  asyncHandler(async (req, res) => {
-    const { name, email, password, code } = registerVerifySchema.parse(req.body);
-    await verifyEmailOtp(email, 'REGISTER', code);
-
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
-    let user;
-    try {
-      // Role is always STUDENT on self-registration; never trust a client role.
-      user = await User.create({ name, email, passwordHash, role: 'STUDENT' });
-    } catch (err) {
-      if (isDuplicateKey(err)) {
-        throw new AppError(409, 'EMAIL_TAKEN', 'An account with this email already exists.');
-      }
-      throw err;
-    }
-
-    const expiresAt = await issueSession(user, res);
-    res.status(201).json(authBody(user, expiresAt));
-  })
-);
-
-authRouter.post(
-  '/forgot-password',
-  forgotPasswordLimiter,
-  asyncHandler(async (req, res) => {
-    const { email } = forgotPasswordSchema.parse(req.body);
-
-    // Uniform machinery for every email, known or unknown: same response shape
-    // AND the same server work (DB write + SMTP round-trip), so an attacker
-    // cannot tell accounts apart by response shape or wall-clock timing. The
-    // OTP stored for an unknown email is inert (reset-password still refuses
-    // to verify a missing account) and expires via the TTL index in 10 minutes.
-    const code = generateOtpCode();
-    const otpExpiresAt = await storeEmailOtp(email, 'PASSWORD_RESET', code);
-    await sendOtpEmail(email, code);
-    res.json({ email, otpExpiresAt: otpExpiresAt.toISOString() });
-  })
-);
-
-authRouter.post(
-  '/reset-password',
-  resetPasswordLimiter,
-  asyncHandler(async (req, res) => {
-    const { email, code, newPassword } = resetPasswordSchema.parse(req.body);
-    await verifyEmailOtp(email, 'PASSWORD_RESET', code);
-
-    const user = await User.findOne({ email });
-    if (!user) {
-      // OTP existed but the account is gone — behave exactly like a bad code.
-      throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
-    }
-
-    const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
-    await user.updateOne({ $set: { passwordHash } });
-
-    // A reset revokes every established session on the account.
-    await RefreshSession.updateMany({ userId: user._id, revokedAt: null }, { $set: { revokedAt: new Date() } });
-    clearAuthCookies(res);
-    res.status(204).end();
-  })
-);
-
-authRouter.post(
-  '/login',
-  loginLimiter,
-  asyncHandler(async (req, res) => {
-    const { email, password } = loginSchema.parse(req.body);
-    const user = await User.findOne({ email }).select('+passwordHash');
-    const ok = user
-      ? await argon2.verify(user.passwordHash, password).catch(() => false)
-      : await argon2.verify(await getDummyHash(), password).catch(() => false);
-    if (!user || !ok) {
-      throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
-    }
-
-    const expiresAt = await issueSession(user, res);
-    res.json(authBody(user, expiresAt));
-  })
-);
 
 authRouter.post(
   '/refresh',
