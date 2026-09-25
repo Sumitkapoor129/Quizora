@@ -359,32 +359,43 @@ the minimum code is written to pass it.
 
 ### 7.2 New `server/tests/helpers/auth.ts`
 
-One helper, replacing six duplicated `login`+`cookiePair` helpers:
+Two exports, replacing the seven duplicated `login`+`cookiePair` helpers
+(`admin-attempts`, `import-admin`, `resources`, `student-exam`, `student-portal`,
+`tests-admin`, `admin-analytics`):
 
 ```ts
-export async function createTestUser(opts?: { role?: 'ADMIN' | 'STUDENT'; email?: string; name?: string }):
-  Promise<{ id: string; email: string; name: string; role: string; cookie: string }>
+export async function seedUser(opts?: { role?: 'ADMIN' | 'STUDENT'; email?: string; name?: string }):
+  Promise<{ id: string; email: string; name: string; role: 'ADMIN' | 'STUDENT' }>
+
+export async function createTestSession(opts?: { role?: 'ADMIN' | 'STUDENT'; email?: string; name?: string }):
+  Promise<SeededUser & { accessCookie: string; refreshCookie: string; refreshToken: string }>
 ```
 
-It creates the `User` (and a real `RefreshSession`, because `/me` requires a live
-session — `auth.ts:397`) using `signAccessToken` from `services/session.ts`, and
-returns the `accessToken=…;` cookie pair. The remaining nine test files call it.
+`seedUser` creates the `User` alone. `createTestSession` is `seedUser` plus a real
+`RefreshSession` and a signed access token (via `signAccessToken` from
+`services/session.ts`) — `/me` requires a live session, so a cookie without one is
+not an authenticated user. Cookies are returned as ready-made `Cookie` header
+values (`accessToken=…`), so no file scrapes `set-cookie` any more.
 
 ### 7.3 Existing server tests
 
 - `auth.test.ts` — pruned to `/refresh` (rotation, replay grace, genuine replay),
   `/logout`, `/me`
 - `auth-otp.test.ts`, `auth-password-reset.test.ts` — deleted
-- the nine other files — login helper swapped for `createTestUser`
+- the seven other files — login helper swapped for `createTestSession`
+- `auth.test.ts`, `student-portal.test.ts` also switch to the helper as part of
+  their pruning
 - `db-harness.test.ts` — the assertion on `passwordHash` is replaced with one on
   `googleId` uniqueness and the `STUDENT` role default
 - expected total: ~152 → ~137
 
 ### 7.4 Client tests
 
-- `Login.test.tsx` — rewritten: renders the Google button; clicking it points at
-  the start URL with `next` preserved; `?oauth=error` shows the banner; an
-  already-authenticated visitor is redirected to the role home
+- `Login.test.tsx` — rewritten: the anchor's `href` is the start URL; `?next` is
+  preserved and an unsafe one is dropped; `?oauth=error` shows the banner and
+  nothing shows it otherwise; an already-authenticated visitor is redirected to
+  the role home. Assert the path with a regex, not an exact string — under vitest
+  `import.meta.env.DEV` is true, so `BASE_URL` is `http://localhost:3001`.
 - `Register.test.tsx`, `ForgotPassword.test.tsx`, `ResetPassword.test.tsx` —
   deleted
 - `routes.test.tsx` — adds `/register` → `/login`
@@ -401,15 +412,17 @@ and `npm run build` clean in both; no new dependency in either `package.json`.
 ## 8. Files touched
 
 **New (2):** `server/src/services/googleOAuth.ts`, `server/src/services/session.ts`
-**New test (2):** `server/tests/oauth.test.ts`, `server/tests/helpers/auth.ts`
-**Deleted (server, 3):** `src/models/EmailOtp.ts`, `src/services/mailer.ts`,
+**New test (3):** `server/tests/oauth.test.ts`, `server/tests/helpers/auth.ts`,
+`server/tests/env.test.ts`
+**Deleted (server, 4):** `src/models/EmailOtp.ts`, `src/services/mailer.ts`,
 `tests/auth-otp.test.ts`, `tests/auth-password-reset.test.ts`
 **Deleted (client, 3):** `pages/auth/Register.tsx`, `pages/auth/ForgotPassword.tsx`,
 `pages/auth/ResetPassword.tsx` + their 3 tests
 **Modified (server):** `src/routes/auth.ts`, `src/routes/student.ts`,
 `src/models/User.ts`, `src/config/env.ts`, `src/middleware/originCheck.ts`,
 `package.json`, `.env.example`, `vitest.config.ts`, `tests/auth.test.ts`,
-`tests/db-harness.test.ts`, and the 9 test files adopting the helper
+`tests/student-portal.test.ts`, `tests/db-harness.test.ts`, and the 7 test files
+adopting the helper
 **Modified (client):** `src/api/client.ts`, `src/context/AuthContext.tsx`,
 `src/routes/index.tsx`, `src/types/index.ts`, `src/pages/auth/Login.tsx`,
 `src/pages/student/Profile.tsx`, and the 6 test files injecting the context
