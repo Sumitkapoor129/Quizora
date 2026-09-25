@@ -80,7 +80,38 @@ Spec: `docs/superpowers/specs/2026-09-25-google-oauth-design.md` (binding)
 - Accepted: dev mode with no `.env` values yields `client_id=`/`redirect_uri=` and a
   Google error page. Deploy-time config is the fix, not a code guard; `.env.example`
   gains the four keys in Task 4.
-- Next: Task 4 (delete the dead auth surface).
+- `f929f48` **Task 4** password/OTP/mailer removal, `User.googleId {unique, sparse, index}`.
+  **Suite 165 → 143 / 12 files** (165 − 9 `auth-otp` − 8 `auth-password-reset` − 3 from
+  `auth.test.ts` 14→11 − 1 `db-harness` − 1 `student-portal`), typecheck clean.
+  Surviving `/me` `/refresh` `/logout` tests rewired to `createTestSession`; the
+  rotation test's `not.toBe(first)` cookie assertion and the replay test's
+  backdating `updateOne` both keep them from passing for a trivial reason.
+- `690f446` `CookieOptions` + `issueSession` + `node:crypto` left OUT of `auth.ts`
+  rather than parked unused for Task 5 (also fixed stale `server/README.md` claims).
+  `student.ts` now uses `authBody()` from the session service.
+- Deliberate deviation: an empty `PATCH /api/student/profile` body still returns
+  400 `'Provide a name.'` — a 200 no-op would claim success on a request that
+  changed nothing, and a stale client sending only the old password fields gets a
+  diagnostic instead of silence. Pinned by a test.
+- `9f0e107` review follow-ups: `context.md` still said `passwordHash` /
+  `JWT_REFRESH_SECRET`, README still promised "Phase 2 adds the auth routes",
+  and Task 5's import list omitted the two imports Task 4 had removed. All synced.
+- **Reviewer (independent) found no vacuous tests, no over-deletion, and Task 5's
+  inputs intact.** `typecheck` does NOT cover tests (`exclude: ["tests"]`, and
+  `noUnusedLocals` is off — the plan's earlier claim was wrong, now fixed). A
+  standalone strict pass over all 13 test files: 0 errors in the 4 files Task 4
+  touched; 6 pre-existing errors in `import-admin.test.ts` / `student-exam.test.ts`
+  (unrelated, not fixed).
+- **Merge gate restated by the reviewer: Tasks 4+5+6 must ship as ONE unit.**
+  The client still posts to five routes that now 404 (`client.ts:158-169`,
+  `AuthContext.tsx:12,58`). Branch is not deployable on its own.
+- Open for Task 5: the two new public OAuth routes have no rate limiter (the four
+  other limiters were just deleted). Decide deliberately — the callback does an
+  outbound token exchange per request, and `state` match alone does not stop a
+  start→callback loop.
+- Known, not fixed: orphaned `passwordHash` values in a real `users` collection
+  are ignored by Mongoose `strict`; optional `$unset` is in the spec.
+- Next: Task 5 (Google sign-in routes + `originCheck` callback exemption).
 
 
 
