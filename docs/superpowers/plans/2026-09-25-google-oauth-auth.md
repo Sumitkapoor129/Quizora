@@ -956,6 +956,12 @@ Add near the top of the file, after the imports:
 ```ts
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
+// ponytail: the two OAuth routes get no rate limiter, unlike /refresh. A
+// start→callback loop costs one outbound call to Google's token endpoint, which
+// Google already rate-limits, and a per-IP ceiling here would lock out a cohort
+// signing in together from one campus NAT — the normal case for this product.
+// Add one if the log noise or egress ever matters.
+
 // Scoped to the OAuth routes, and SameSite=Lax so the cookie still arrives on
 // the callback: that request is a top-level cross-site GET navigation from
 // accounts.google.com, which Lax permits (and Strict would not).
@@ -1081,7 +1087,7 @@ authRouter.get(
 - [ ] **Step 5: Run the OAuth tests and watch them pass**
 
 Run: `cd server && npx vitest run tests/oauth.test.ts`
-Expected: PASS (12 tests). The suite is now 165 before Task 4's deletions.
+Expected: PASS (12 tests). Full suite: 143 + 12 = **155 / 13 files**.
 
 - [ ] **Step 6: Run the full server suite and typecheck**
 
