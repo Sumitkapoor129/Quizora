@@ -111,7 +111,46 @@ Spec: `docs/superpowers/specs/2026-09-25-google-oauth-design.md` (binding)
   start→callback loop.
 - Known, not fixed: orphaned `passwordHash` values in a real `users` collection
   are ignored by Mongoose `strict`; optional `$unset` is in the spec.
-- Next: Task 5 (Google sign-in routes + `originCheck` callback exemption).
+- `d4d9b21` **Task 5** both OAuth routes + `originCheck` exemption, 12 tests.
+  143 → **155 / 13 files**, typecheck clean. Implementer caught three plan/test
+  defects: the `oauthNext` cookie is percent-encoded on the wire, the plan's
+  tests 3+6 collided on one `sub` (a real cross-test leak), and supertest types
+  `set-cookie` as `string`. Test 12 was strengthened past the plan: it asserts
+  the callback *completes* the sign-in, and a new test pins that the start route
+  and `/me` are still 403 with Google's Referer.
+- Review ran 21 `?next=` variants + 10 cookie-toss variants over raw sockets:
+  **0 origin escapes**. State fails closed on all 6 shapes. Exemption is one
+  exact path (14 variants all 403). No secret reaches the client. No vacuous test.
+  Four findings, all real:
+  - **I1** email match re-pointed `googleId`, so a reassigned institutional
+    address silently transferred the previous holder's attempts + results.
+  - **I2** `CLIENT_ORIGIN` unvalidated in production: `.env.example`'s own
+    dev-first list meant every sign-in would land on `http://localhost:5173`,
+    and `CLIENT_ORIGIN=` produced `undefined/`.
+  - **I3** the callback-side `safeNext` (the strongest line in the commit) had no
+    test; deleting it kept all 12 green. Nothing pinned the exemption's width.
+  - **I4** `String(req.query.error)` into `console.warn` → forged log lines and
+    ANSI/OSC-8 terminal escapes.
+- `8a23c19` fix round, written test-first (both I1 and the `email_verified`
+  test failed first, for the right reasons):
+  `link_conflict` on a sub mismatch, `email_verified !== true`, control-char
+  `safeNext`, `failOauth` sanitiser. **155 → 164**.
+- Post-fix review confirmed all four fixed via mutation testing (deleting each
+  guard makes its test fail), and found the file clean byte-level after a NUL
+  byte I injected mid-edit and repaired. One gap: the I2 fix's *wiring* was
+  untested — deleting the two call-site lines kept the whole suite green.
+- `b5fb525` extracted the whole production gate into an exported pure
+  `productionProblems()` and tested it (6 problems from an empty config, 0 from
+  a valid one, 0 outside production). Also closed the `localhost.evil.com`
+  false positive, `0.0.0.0`/`127.0.0.2` misses, a non-http(s) origin, and
+  U+2028/U+2029 in the log sanitiser. **164 → 170 / 13 files**.
+- Spec corrected: it mandated the *weaker* `cookies.oauthNext ?? '/'` and
+  `email_verified === false`, and wrongly claimed `CLIENT_ORIGIN` always has an
+  entry. The code is now the stronger document in all three.
+- Deliberately deferred (all with a `ponytail:` note): no rate limiter on the
+  OAuth routes; `link_conflict` recovery is manual; `__Host-` cookie prefix
+  (needs `Path=/`, trades the scoping); log-reason length is now capped at 200.
+- Next: Task 6 (client Google-only auth UI). Server is signable; nothing calls it yet.
 
 
 
