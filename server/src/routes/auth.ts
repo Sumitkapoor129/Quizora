@@ -1,4 +1,4 @@
-import { Router, type CookieOptions, type NextFunction, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
@@ -10,7 +10,6 @@ import {
   authBody,
   clearAuthCookies,
   hashToken,
-  issueSession,
   newRefreshToken,
   setAuthCookies,
   signAccessToken

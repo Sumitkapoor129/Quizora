@@ -653,7 +653,7 @@ Removes password login, the OTP model, the mailer and their config. **After this
 
 **Files:**
 - Delete: `server/src/models/EmailOtp.ts`, `server/src/services/mailer.ts`, `server/tests/auth-otp.test.ts`, `server/tests/auth-password-reset.test.ts`
-- Modify: `server/src/models/User.ts`, `server/src/routes/auth.ts`, `server/src/routes/student.ts`, `server/src/config/env.ts`, `server/vitest.config.ts`, `.env.example`, `server/package.json`, `server/tests/auth.test.ts`, `server/tests/db-harness.test.ts`, `server/tests/student-portal.test.ts`, **`server/tests/helpers/auth.ts`**
+- Modify: `server/src/models/User.ts`, `server/src/routes/auth.ts`, `server/src/routes/student.ts`, `server/src/config/env.ts`, `server/vitest.config.ts`, `.env.example`, `server/package.json`, `server/README.md`, `server/tests/auth.test.ts`, `server/tests/db-harness.test.ts`, `server/tests/student-portal.test.ts`, **`server/tests/helpers/auth.ts`**
 
 **Interfaces:**
 - Consumes: `services/session.ts` and `seedUser`/`createTestSession` (Tasks 1-2)
@@ -735,9 +735,10 @@ In `server/src/routes/auth.ts` delete: the five route blocks `POST /register` (l
 Then fix the imports. After the deletions and the Task 1 move, the surviving set is exactly:
 
 - **remove:** `argon2`, `EmailOtp`/`EmailOtpPurpose`, `sendMail`, `randomInt`, `timingSafeEqual`, `createHash`, `jwt`, `z`
-- **keep:** `randomBytes` (Task 5 mints `state` from it), `Router`/`CookieOptions`/`NextFunction`/`Request`/`Response`, `rateLimit` (only `refreshLimiter` is left), `env`, `AppError`, `authenticate`, `RefreshSession`, `User`
+- **keep:** `Router`/`NextFunction`/`Request`/`Response`, `rateLimit` (only `refreshLimiter` is left), `env`, `AppError`, `authenticate`, `RefreshSession`, `User`
+- **also remove the whole `node:crypto` import:** `randomBytes` was only used by the OTP helpers, so unlike `randomInt`/`timingSafeEqual` it is not present here to begin with. Task 5 re-adds it when it starts minting `state` from it — along with `type CookieOptions` and `issueSession`, which Task 4 likewise leaves out rather than parking unused imports for a later commit.
 
-`jwt` and `createHash` are not "probably" unused: they were only ever used by `signAccessToken`/`hashToken`, both of which Task 1 moved out. Leaving either import behind fails `npm run typecheck` on `noUnusedLocals`. `REPLAY_REVOKE_GRACE_MS` stays — `/refresh` still uses it.
+`jwt` and `createHash` are not "probably" unused: they were only ever used by `signAccessToken`/`hashToken`, both of which Task 1 moved out. Nothing catches a leftover import here — `noUnusedLocals` is not enabled in `server/tsconfig.json` — so the `rg` sweep in Step 8 is the only guard. `REPLAY_REVOKE_GRACE_MS` stays — `/refresh` still uses it.
 
 Keep `isDuplicateKey` — Task 5 reuses it for the sign-in race.
 
@@ -753,7 +754,9 @@ const profileSchema = z.object({
 });
 ```
 
-(keep whatever length bound the current `name` field already uses — match it, do not invent one), delete the `superRefine` that required `currentPassword` for `newPassword`, and reduce the handler to: load the user, apply `name` when present, save, then respond with the existing session DTO. Import `authBody` from `../services/session.js` instead of rebuilding the object inline at lines 788-791, and look up the live session for the expiry exactly as the old code did.
+(keep whatever length bound the current `name` field already uses — match it, do not invent one), delete the `currentPassword`/`newPassword` fields and the branch of the `superRefine` that required one for the other, and reduce the handler to: load the user, apply `name` when present, save, then respond with the existing session DTO. Import `authBody` from `../services/session.js` instead of rebuilding the object inline at lines 788-791, and look up the live session for the expiry exactly as the old code did.
+
+Keep the `superRefine`'s remaining guard — a body with no `name` is still `400 VALIDATION_ERROR` on `name` with `'Provide a name.'`. A `{}` (or a stale client sending only the old password fields) must not get a 200 that changed nothing. This is a deliberate deviation from the literal snippet above, pinned by a test.
 
 - [ ] **Step 6: Remove the dead config keys**
 

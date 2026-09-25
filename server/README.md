@@ -5,7 +5,7 @@ Backend for the MCQ exam platform.
 ## Stack
 
 Node.js v24, Express v4, Mongoose (MongoDB), TypeScript (strict, ESM), zod,
-argon2id, JWT cookie auth. Tests: vitest + supertest + mongodb-memory-server.
+Google OAuth, JWT cookie auth. Tests: vitest + supertest + mongodb-memory-server.
 
 ## Prerequisites
 
@@ -42,9 +42,12 @@ cp .env.example .env   # then fill in MONGODB_URI and secrets
 | `PORT`                | no       | `3001`                | HTTP port                                |
 | `MONGODB_URI`         | yes*     | —                     | Atlas/real Mongo URI. *Not needed for tests |
 | `JWT_ACCESS_SECRET`   | yes*     | —                     | Long random value. *Not needed for tests |
-| `JWT_REFRESH_SECRET`  | yes*     | —                     | Long random value. *Not needed for tests |
 | `CLIENT_ORIGIN`       | no       | `http://localhost:5173` | Comma-separated allowed CORS origins / Origin check (e.g. `...`,https://quizora-sk.vercel.app) |
 | `COOKIE_SECURE`       | no       | `false`               | `true` in production (HTTPS only cookies)|
+| `GOOGLE_OAUTH_CLIENT_ID`     | yes† | —                | Google Cloud OAuth client id. †Required in production |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | yes† | —                | Google Cloud OAuth client secret. †Required in production |
+| `OAUTH_CALLBACK_URL`  | yes†     | —                     | Exact URL registered in Google Cloud. †Required in production |
+| `ADMIN_EMAILS`        | yes†     | `''`                  | Comma-separated emails that resolve to `ADMIN` on every sign-in. †Required in production — an empty list would demote every admin |
 
 ## API
 
