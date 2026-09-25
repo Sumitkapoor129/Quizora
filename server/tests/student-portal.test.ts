@@ -5,11 +5,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
-import { createTestSession } from './helpers/auth.js';
+import { createTestSession, TEST_PASSWORD } from './helpers/auth.js';
 
-// Still needed by the password-change tests below, which exercise the
-// credential flow directly. Must stay in sync with helpers/auth.ts.
-const PASSWORD = 'password123';
+const PASSWORD = TEST_PASSWORD;
 const NEW_PASSWORD = 'newpassword9';
 
 const ATTEMPT_KEYS = ['attemptId', 'date', 'marksEarned', 'percent', 'status', 'testId', 'testTitle', 'totalMarks'];

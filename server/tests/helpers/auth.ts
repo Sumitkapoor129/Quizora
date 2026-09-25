@@ -1,9 +1,9 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import argon2 from 'argon2';
 
 // The `src` imports below are deliberately dynamic. Test files assign
 // process.env.UPLOAD_DIR in beforeAll and then import `src` on purpose, so a
-// static import here would evaluate config/env.js (via services/session.js)
+// static import here would evaluate config/env.ts (via services/session.ts)
 // before that assignment and freeze UPLOAD_DIR at its 'uploads' default.
 
 /**
@@ -67,13 +67,13 @@ export interface TestSession extends SeededUser {
  */
 export async function createTestSession(opts: SeedOptions = {}): Promise<TestSession> {
   const { RefreshSession } = await import('../../src/models/RefreshSession.js');
-  const { REFRESH_TTL_MS, signAccessToken } = await import('../../src/services/session.js');
+  const { REFRESH_TTL_MS, newRefreshToken, signAccessToken } = await import('../../src/services/session.js');
   const user = await seedUser(opts);
-  const raw = randomBytes(48).toString('base64url');
+  const { raw, hash } = newRefreshToken();
   const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
   await RefreshSession.create({
     userId: user.id,
-    tokenHash: createHash('sha256').update(raw).digest('hex'),
+    tokenHash: hash,
     expiresAt,
     revokedAt: null
   });
