@@ -34,6 +34,7 @@ describe('exchangeCode', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://oauth2.googleapis.com/token');
     expect(init.method).toBe('POST');
+    expect(new Headers(init.headers as HeadersInit).get('Content-Type')).toBe('application/x-www-form-urlencoded');
     const body = new URLSearchParams(String(init.body));
     expect(body.get('grant_type')).toBe('authorization_code');
     expect(body.get('code')).toBe('code-abc');
@@ -42,14 +43,24 @@ describe('exchangeCode', () => {
     expect(body.get('redirect_uri')).toBe('http://localhost:3001/api/auth/oauth/google/callback');
   });
 
-  it('throws when Google rejects the code', async () => {
+  it('throws with the rejected status when Google refuses the code', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({ error: 'invalid_grant' }, 400)));
-    await expect(exchangeCode('bad')).rejects.toThrow(/google_token_exchange_failed/);
+    await expect(exchangeCode('bad')).rejects.toThrow(/google_token_exchange_failed:400/);
   });
 
   it('throws when the response carries no access token', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({})));
-    await expect(exchangeCode('code')).rejects.toThrow(/google_token_exchange_failed/);
+    await expect(exchangeCode('code')).rejects.toThrow(/google_token_exchange_failed:no_access_token/);
+  });
+
+  it('contains a transport failure as unreachable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('fetch failed');
+      })
+    );
+    await expect(exchangeCode('code')).rejects.toThrow(/google_token_exchange_failed:unreachable/);
   });
 });
 
@@ -64,11 +75,26 @@ describe('fetchProfile', () => {
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://openidconnect.googleapis.com/v1/userinfo');
-    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-123');
+    expect(new Headers(init.headers as HeadersInit).get('Authorization')).toBe('Bearer tok-123');
   });
 
-  it('throws when the userinfo call fails', async () => {
+  it('throws with the failing status when the userinfo call is rejected', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => json({}, 401)));
-    await expect(fetchProfile('tok')).rejects.toThrow(/google_profile_failed/);
+    await expect(fetchProfile('tok')).rejects.toThrow(/google_profile_failed:401/);
+  });
+
+  it('contains a non-JSON success body', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>nope</html>', { status: 200 })));
+    await expect(fetchProfile('tok')).rejects.toThrow(/google_profile_failed:invalid_json/);
+  });
+
+  it('rejects a payload with no subject', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ email: 'student@example.com' })));
+    await expect(fetchProfile('tok')).rejects.toThrow(/google_profile_failed:invalid_payload/);
+  });
+
+  it('rejects a payload with no email', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => json({ sub: 'google-sub-1' })));
+    await expect(fetchProfile('tok')).rejects.toThrow(/google_profile_failed:invalid_payload/);
   });
 });

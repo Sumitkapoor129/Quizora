@@ -3,6 +3,28 @@ import { env } from '../config/env.js';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
+const TIMEOUT_MS = 10_000;
+
+/**
+ * One place that turns a transport, status or decode failure into
+ * `<reason>:<detail>`. Callers match on the `google_*_failed` prefix, and a
+ * hung or unparseable Google response must not escape as a raw fetch/JSON
+ * error or hang the sign-in request.
+ */
+async function googleJson(reason: string, url: string, init?: RequestInit): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch {
+    throw new Error(`${reason}:unreachable`);
+  }
+  if (!res.ok) throw new Error(`${reason}:${res.status}`);
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`${reason}:invalid_json`);
+  }
+}
 
 export interface GoogleProfile {
   sub: string;
@@ -22,7 +44,7 @@ export function buildAuthUrl(opts: { state: string }): string {
 }
 
 export async function exchangeCode(code: string): Promise<string> {
-  const res = await fetch(TOKEN_URL, {
+  const body = (await googleJson('google_token_exchange_failed', TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -32,17 +54,15 @@ export async function exchangeCode(code: string): Promise<string> {
       client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
       redirect_uri: env.OAUTH_CALLBACK_URL
     })
-  });
-  if (!res.ok) throw new Error(`google_token_exchange_failed:${res.status}`);
-  const body = (await res.json()) as { access_token?: string };
+  })) as { access_token?: string };
   if (!body.access_token) throw new Error('google_token_exchange_failed:no_access_token');
   return body.access_token;
 }
 
 export async function fetchProfile(accessToken: string): Promise<GoogleProfile> {
-  const res = await fetch(USERINFO_URL, {
+  const profile = (await googleJson('google_profile_failed', USERINFO_URL, {
     headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  if (!res.ok) throw new Error(`google_profile_failed:${res.status}`);
-  return (await res.json()) as GoogleProfile;
+  })) as Partial<GoogleProfile>;
+  if (!profile.sub || !profile.email) throw new Error('google_profile_failed:invalid_payload');
+  return profile as GoogleProfile;
 }
