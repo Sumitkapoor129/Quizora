@@ -1,4 +1,5 @@
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { randomBytes } from 'node:crypto';
+import { Router, type CookieOptions, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
@@ -6,10 +7,17 @@ import { authenticate } from '../middleware/auth.js';
 import { RefreshSession } from '../models/RefreshSession.js';
 import { User } from '../models/User.js';
 import {
+  buildAuthUrl,
+  exchangeCode,
+  fetchProfile,
+  type GoogleProfile
+} from '../services/googleOAuth.js';
+import {
   REFRESH_TTL_MS,
   authBody,
   clearAuthCookies,
   hashToken,
+  issueSession,
   newRefreshToken,
   setAuthCookies,
   signAccessToken
@@ -46,7 +54,130 @@ const limiterOptions = {
 
 const refreshLimiter = rateLimit({ ...limiterOptions, limit: 60 });
 
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+// ponytail: the two OAuth routes get no rate limiter, unlike /refresh. A
+// start→callback loop costs one outbound call to Google's token endpoint, which
+// Google already rate-limits, and a per-IP ceiling here would lock out a cohort
+// signing in together from one campus NAT — the normal case for this product.
+// Add one if the log noise or egress ever matters.
+
+// Scoped to the OAuth routes, and SameSite=Lax so the cookie still arrives on
+// the callback: that request is a top-level cross-site GET navigation from
+// accounts.google.com, which Lax permits (and Strict would not).
+const oauthCookieBase: CookieOptions = {
+  httpOnly: true,
+  secure: env.COOKIE_SECURE,
+  sameSite: 'lax',
+  path: '/api/auth/oauth'
+};
+
+/**
+ * Where the browser goes after signing in: the FIRST configured client origin.
+ * That is the app (Vercel in production, localhost:5173 in development).
+ * OAUTH_CALLBACK_URL's own origin is the *server* and would 404 in development.
+ */
+function appOrigin(): string {
+  return env.CLIENT_ORIGINS[0];
+}
+
+/** Untrusted input that ends up in a redirect: same-origin paths only. */
+function safeNext(raw: unknown): string {
+  if (typeof raw !== 'string' || raw === '') return '/';
+  if (!raw.startsWith('/')) return '/';
+  if (raw.startsWith('//')) return '/';
+  if (raw.includes('\\')) return '/';
+  return raw;
+}
+
+function clearOauthCookies(res: Response): void {
+  res.clearCookie('oauthState', oauthCookieBase);
+  res.clearCookie('oauthNext', oauthCookieBase);
+}
+
+/** Log the reason server-side; never leak a Google error string to the browser. */
+function failOauth(res: Response, reason: string): void {
+  console.warn(`[oauth] sign-in failed: ${reason}`);
+  res.redirect(302, `${appOrigin()}/login?oauth=error`);
+}
+
+/**
+ * Find or create the account for a Google profile. A pre-OAuth account is
+ * linked by email so the student's identity, attempts and results survive. The
+ * role is re-evaluated from ADMIN_EMAILS on every sign-in (removing an address
+ * from the list revokes admin); the display name is only ever set at creation,
+ * so a name the student edited in their profile is not overwritten.
+ */
+async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'ADMIN' | 'STUDENT') {
+  const existing = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
+  if (existing) {
+    existing.googleId = profile.sub;
+    existing.role = role;
+    await existing.save();
+    return existing;
+  }
+  try {
+    return await User.create({
+      googleId: profile.sub,
+      email,
+      name: profile.name?.trim() || email.split('@')[0],
+      role
+    });
+  } catch (err) {
+    if (!isDuplicateKey(err)) throw err;
+    // Two tabs finished signing in at once; the loser adopts the winner's row.
+    const winner = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
+    if (!winner) throw err;
+    return winner;
+  }
+}
+
 export const authRouter = Router();
+
+authRouter.get(
+  '/oauth/google',
+  asyncHandler(async (req, res) => {
+    const state = randomBytes(32).toString('base64url');
+    const next = safeNext(req.query.next);
+    res.cookie('oauthState', state, { ...oauthCookieBase, maxAge: OAUTH_STATE_TTL_MS });
+    res.cookie('oauthNext', next, { ...oauthCookieBase, maxAge: OAUTH_STATE_TTL_MS });
+    res.redirect(302, buildAuthUrl({ state }));
+  })
+);
+
+authRouter.get(
+  '/oauth/google/callback',
+  asyncHandler(async (req, res) => {
+    // Clear first: every exit path below has consumed both cookies.
+    clearOauthCookies(res);
+
+    const expected = req.cookies?.oauthState;
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    if (!expected || !state || expected !== state) return failOauth(res, 'state_mismatch');
+
+    if (req.query.error) return failOauth(res, `google_error:${String(req.query.error)}`);
+
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    if (!code) return failOauth(res, 'missing_code');
+
+    let profile: GoogleProfile;
+    try {
+      profile = await fetchProfile(await exchangeCode(code));
+    } catch (err) {
+      return failOauth(res, err instanceof Error ? err.message : 'google_exchange_failed');
+    }
+
+    const email = typeof profile.email === 'string' ? profile.email.trim().toLowerCase() : '';
+    if (!email || profile.email_verified === false) return failOauth(res, 'email_unverified');
+
+    const next = safeNext(req.cookies?.oauthNext);
+    const role = env.ADMIN_EMAIL_SET.has(email) ? 'ADMIN' : 'STUDENT';
+    const user = await upsertGoogleUser(profile, email, role);
+
+    await issueSession(user, res);
+    res.redirect(302, `${appOrigin()}${next}`);
+  })
+);
 
 authRouter.post(
   '/refresh',
