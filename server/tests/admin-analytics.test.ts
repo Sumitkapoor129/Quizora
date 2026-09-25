@@ -1,13 +1,11 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import argon2 from 'argon2';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
-
-const PASSWORD = 'password123';
+import { createTestSession } from './helpers/auth.js';
 
 let mongo: MongoMemoryServer | undefined;
 let app: Express;
@@ -68,22 +66,12 @@ beforeAll(async () => {
   await Test.init();
   await TestAttempt.init();
 
-  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<{ cookie: string }> {
-    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
-    await User.create({ email, name, passwordHash, role });
-    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
-    const raw = login.headers['set-cookie'];
-    const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-    const access = list.map((c) => c.split(';')[0]).find((c) => c.startsWith('accessToken='))!;
-    return { cookie: access };
-  }
-
-  const admin = await seedUser('analytics-admin@example.com', 'Analytics Admin', 'ADMIN');
-  adminCookie = admin.cookie;
-  const s1 = await seedUser('a1@example.com', 'Analytics One', 'STUDENT');
-  studentCookie = s1.cookie;
-  const s2 = await seedUser('a2@example.com', 'Analytics Two', 'STUDENT');
-  student2Cookie = s2.cookie;
+  const admin = await createTestSession({ role: 'ADMIN' });
+  adminCookie = admin.accessCookie;
+  const s1 = await createTestSession({ role: 'STUDENT' });
+  studentCookie = s1.accessCookie;
+  const s2 = await createTestSession({ role: 'STUDENT' });
+  student2Cookie = s2.accessCookie;
 }, 120_000);
 
 afterAll(async () => {

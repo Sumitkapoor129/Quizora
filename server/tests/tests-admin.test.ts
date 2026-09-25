@@ -1,14 +1,13 @@
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import argon2 from 'argon2';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
+import { createTestSession } from './helpers/auth.js';
 
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
-const PASSWORD = 'password123';
 
 const TITLE_REQUIRED = 'Test title is required.';
 const SECTION_TITLE_REQUIRED = 'Section title is required.';
@@ -45,18 +44,11 @@ beforeAll(async () => {
   await Test.init();
   await TestAttempt.init();
 
-  const admin = await seedUser('admin@example.com', 'Admin', 'ADMIN');
-  adminCookie = admin.cookie;
-  const student = await seedUser('student@example.com', 'Student', 'STUDENT');
-  studentCookie = student.cookie;
+  const admin = await createTestSession({ role: 'ADMIN' });
+  adminCookie = admin.accessCookie;
+  const student = await createTestSession({ role: 'STUDENT' });
+  studentCookie = student.accessCookie;
   studentId = student.id;
-
-  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<{ id: string; cookie: string }> {
-    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
-    const user = await User.create({ email, name, passwordHash, role });
-    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
-    return { id: String(user._id), cookie: cookiePair(login, 'accessToken')! };
-  }
 }, 120_000);
 
 afterAll(async () => {
@@ -65,18 +57,6 @@ afterAll(async () => {
   await mongo?.stop();
   await rm(uploadDir, { recursive: true, force: true });
 });
-
-/** Returns the `name=value` pair (ready for a Cookie header) for `name`. */
-function cookiePair(res: request.Response, name: string): string | undefined {
-  const raw = res.headers['set-cookie'];
-  const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-  for (const cookie of list) {
-    const pair = cookie.split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq !== -1 && pair.slice(0, eq) === name) return pair;
-  }
-  return undefined;
-}
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

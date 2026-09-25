@@ -1,12 +1,14 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import argon2 from 'argon2';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
+import { createTestSession } from './helpers/auth.js';
 
+// Still needed by the password-change tests below, which exercise the
+// credential flow directly. Must stay in sync with helpers/auth.ts.
 const PASSWORD = 'password123';
 const NEW_PASSWORD = 'newpassword9';
 
@@ -36,19 +38,12 @@ beforeAll(async () => {
   await Test.init();
   await TestAttempt.init();
 
-  const admin = await seedUser('admin@example.com', 'Admin', 'ADMIN');
-  adminCookie = admin.cookie;
-  const s1 = await seedUser('s1@example.com', 'Student One', 'STUDENT');
-  studentCookie = s1.cookie;
-  const s2 = await seedUser('s2@example.com', 'Student Two', 'STUDENT');
-  student2Cookie = s2.cookie;
-
-  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<{ id: string; cookie: string }> {
-    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
-    await User.create({ email, name, passwordHash, role });
-    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
-    return { id: String(login.body.user.id), cookie: cookiePair(login, 'accessToken')! };
-  }
+  const admin = await createTestSession({ role: 'ADMIN', email: 'admin@example.com', name: 'Admin' });
+  adminCookie = admin.accessCookie;
+  const s1 = await createTestSession({ role: 'STUDENT', email: 's1@example.com', name: 'Student One' });
+  studentCookie = s1.accessCookie;
+  const s2 = await createTestSession({ role: 'STUDENT', email: 's2@example.com', name: 'Student Two' });
+  student2Cookie = s2.accessCookie;
 }, 120_000);
 
 afterAll(async () => {
@@ -57,18 +52,6 @@ afterAll(async () => {
   await mongo?.stop();
   await rm(uploadDir, { recursive: true, force: true });
 });
-
-/** Returns the `name=value` pair (ready for a Cookie header) for `name`. */
-function cookiePair(res: request.Response, name: string): string | undefined {
-  const raw = res.headers['set-cookie'];
-  const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-  for (const cookie of list) {
-    const pair = cookie.split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq !== -1 && pair.slice(0, eq) === name) return pair;
-  }
-  return undefined;
-}
 
 // ---- Fixture builders (minimal: one section, one question worth 2 marks) ----
 

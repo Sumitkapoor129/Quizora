@@ -1,13 +1,11 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import argon2 from 'argon2';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
-
-const PASSWORD = 'password123';
+import { createTestSession } from './helpers/auth.js';
 
 const FORBIDDEN = { error: { code: 'FORBIDDEN', message: 'Insufficient permissions.' } };
 
@@ -33,18 +31,11 @@ beforeAll(async () => {
   await User.init();
   await Resource.init();
 
-  const admin = await seedUser('admin@example.com', 'Admin', 'ADMIN');
-  adminCookie = admin.cookie;
+  const admin = await createTestSession({ role: 'ADMIN' });
+  adminCookie = admin.accessCookie;
   adminId = admin.id;
-  const s1 = await seedUser('s1@example.com', 'Student One', 'STUDENT');
-  studentCookie = s1.cookie;
-
-  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<{ id: string; cookie: string }> {
-    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
-    await User.create({ email, name, passwordHash, role });
-    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
-    return { id: String(login.body.user.id), cookie: cookiePair(login, 'accessToken')! };
-  }
+  const s1 = await createTestSession({ role: 'STUDENT' });
+  studentCookie = s1.accessCookie;
 }, 120_000);
 
 afterAll(async () => {
@@ -53,18 +44,6 @@ afterAll(async () => {
   await mongo?.stop();
   await rm(uploadDir, { recursive: true, force: true });
 });
-
-/** Returns the `name=value` pair (ready for a Cookie header) for `name`. */
-function cookiePair(res: request.Response, name: string): string | undefined {
-  const raw = res.headers['set-cookie'];
-  const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-  for (const cookie of list) {
-    const pair = cookie.split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq !== -1 && pair.slice(0, eq) === name) return pair;
-  }
-  return undefined;
-}
 
 const validBody = (overrides: Record<string, unknown> = {}) => ({
   title: 'Algebra Chapter 1',
