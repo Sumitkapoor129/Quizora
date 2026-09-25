@@ -411,3 +411,59 @@ describe('account linking refuses to hand an account to a second Google identity
     expect((await User.findOne({ email: legacy.email }))?.googleId).toBe('google-sub-legacy');
   });
 });
+
+/**
+ * Both unique indexes are load-bearing and both save paths can lose a race:
+ * two tabs finishing sign-in at the same moment. Mongo decides the winner, so
+ * the loser has to adopt that row instead of surfacing a 500.
+ */
+describe('a concurrent duplicate cannot 500 the sign-in', () => {
+  it('adopts the winning row when two first-time sign-ins race on the create', async () => {
+    stubGoogle(okProfile({ sub: 'google-sub-race', email: 'race@example.com' }));
+
+    // Stand in for the other tab winning the insert between our findOne and
+    // our create: the unique index rejects us with 11000.
+    const winner = await User.create({
+      googleId: 'google-sub-race',
+      email: 'race@example.com',
+      name: 'Race Winner',
+      role: 'STUDENT',
+    });
+    const create = vi.spyOn(User, 'create').mockRejectedValueOnce(
+      Object.assign(new Error('E11000 duplicate key error'), { code: 11000 })
+    );
+
+    const start = await startGoogle();
+    const res = await request(app)
+      .get(`/api/auth/oauth/google/callback?code=code-1&state=${start.state}`)
+      .set('Cookie', start.cookie);
+    create.mockRestore();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(`${APP_ORIGIN}/`);
+    expect(res.headers['set-cookie']?.join(';')).toContain('accessToken');
+    expect(await User.countDocuments({ googleId: 'google-sub-race' })).toBe(1);
+    expect((await User.findById(winner.id))?.email).toBe('race@example.com');
+  });
+
+  it('adopts the winning row when two link attempts race on the save', async () => {
+    const legacy = await seedUser({ name: 'Link Race' });
+
+    stubGoogle(okProfile({ sub: 'google-sub-link-race', email: legacy.email }));
+    const save = vi
+      .spyOn(User.prototype, 'save')
+      .mockRejectedValueOnce(Object.assign(new Error('E11000 duplicate key error'), { code: 11000 }));
+
+    const start = await startGoogle();
+    const res = await request(app)
+      .get(`/api/auth/oauth/google/callback?code=code-1&state=${start.state}`)
+      .set('Cookie', start.cookie);
+    save.mockRestore();
+
+    // A raw duplicate-key error here would be a 500 JSON body instead of the
+    // friendly redirect, and the link would be left half-applied.
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(`${APP_ORIGIN}/login?oauth=error`);
+    expect(await User.countDocuments({ email: legacy.email })).toBe(1);
+  });
+});

@@ -128,7 +128,14 @@ async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'AD
     if (existing.googleId && existing.googleId !== profile.sub) return null;
     existing.googleId = profile.sub;
     existing.role = role;
-    await existing.save();
+    try {
+      await existing.save();
+    } catch (err) {
+      // Same race as the create below: another tab linked this googleId first.
+      // Fail with the normal error redirect rather than a raw 500.
+      if (!isDuplicateKey(err)) throw err;
+      return null;
+    }
     return existing;
   }
   try {

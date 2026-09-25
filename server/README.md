@@ -28,7 +28,7 @@ cp .env.example .env   # then fill in MONGODB_URI and secrets
 | `npm run dev`      | Start dev server with hot reload (tsx watch)              |
 | `npm run build`    | Type-check and compile to `dist/` (tsc)                   |
 | `npm start`        | Run the compiled server (`node dist/server.js`)           |
-| `npm test`         | Run the vitest suite (13 files, 170 tests)                |
+| `npm test`         | Run the vitest suite (13 files, 173 tests)                |
 | `npm run typecheck`| Type-check only (`tsc --noEmit`) — excludes `tests/`      |
 
 `npm run dev` / `npm start` refuse to boot with a clear message when

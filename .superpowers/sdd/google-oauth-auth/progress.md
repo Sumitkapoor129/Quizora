@@ -227,6 +227,50 @@ All gates pass from a clean state:
   frontend is `quizora-rho`, the Render backend is `quizora-ppfp`).
 - Merge gate from Task 4 is now satisfied: server, client and docs land together.
 
+## Final branch review — whole flow, not per task
+
+Each task above was reviewed in isolation, so a final pass reviewed the branch as
+one flow against `main`: cross-task contract agreement, the security chain end to
+end, what the branch broke outside auth, suite honesty, and deploy safety.
+
+**Verdict: no CRITICAL, safe to merge.** The seams that a per-task review
+structurally cannot see all line up:
+
+- `googleStartUrl` → start route → callback → Login is a single encode/decode
+  round trip; `ProtectedRoute` encodes once, `googleStartUrl` re-encodes, no
+  double-decode.
+- The callback redirects to `CLIENT_ORIGINS[0]`, matching the client's
+  `APP_ORIGIN` assumption; `?oauth=error` and `/api/auth/me` match `Login.tsx`
+  and `mapSession` field for field.
+- The client `safeNext` copy **is** the security boundary for the authenticated
+  `<Navigate to={next}>` in `Login.tsx`, which never reaches the server. It is
+  byte-identical to the server's and mutation-verified, but only the branch-level
+  pass could establish that dependency.
+- Deploy order is server-first and non-obvious: the old server 404s the new
+  client's start route, and the reverse order dead-ends the Google button.
+- Suite honesty verified by counting: every surviving client test file has an
+  identical case count to the merge base, so the 126 → 121 drop is entirely the
+  three deleted auth features.
+
+Fixed in this round:
+
+| Finding | Fix |
+| ------- | --- |
+| **Important** — `db-harness.test.ts` had dropped its duplicate-`email` 11000 assertion while merging in the `googleId` one. The `email` index is load-bearing: the callback catches 11000 to adopt the winning row, and no test reached that catch, so deleting the whole recovery block kept 170 green | Restored as its own test, and added a test that forces 11000 on `User.create` and asserts the loser adopts the winner's row |
+| **Important** — `sub` is scoped to the OAuth *client id*, so replacing the client id changes every user's `sub` and locks out every linked account with `link_conflict`. Neither checklist said so | Documented in the runbook and the ledger: rotate the secret freely, but unset `googleId` before ever changing the id |
+| **Minor** — `existing.save()` in the link path was not wrapped for 11000, so two tabs linking at once produced a raw 500 JSON body instead of `?oauth=error` | Wrapped in the same `isDuplicateKey` catch, returning the normal `link_conflict` failure. New test went red (500 ≠ 302) before the fix |
+| **Minor** — an empty `CLIENT_ORIGIN` parses to `[]` in *every* env, but the check sat behind the production gate, so in dev a successful sign-in redirected to `undefined/student/tests` — signed in, on a 404, with no boot error | Moved into the existing non-test `missing` block, so it fails at boot in every env |
+| **Minor** — `context.md` Phase 12 still read "PLANNED, NOT STARTED", said `verified_email` (the field is `email_verified`), said first sign-in preserves "accounts/roles" (the opposite of D4), and named the branch `feature/oauth-auth` | Corrected all four |
+
+Documented rather than changed: the unrated OAuth start/callback (Task 5's
+deliberate `ponytail:` tradeoff), the missing PKCE half, and the ≤15-minute
+window before removing an email from `ADMIN_EMAILS` revokes an already-issued
+access token. All three are now written down instead of living only in review
+notes.
+
+Re-verified after the fixes: **server 173 / 13 files** (3 new tests), client
+121 / 18 files, both typechecks and both builds exit 0.
+
 ## Deploy checklist (user actions — not code, not attempted from here)
 
 1. **Google Cloud**: create a *Web application* OAuth client. Authorized redirect
@@ -244,6 +288,33 @@ All gates pass from a clean state:
 4. **Optional cleanup**: `$unset` the now-unused `passwordHash` field on existing
    users; `User.googleId` links them on first Google sign-in by email.
 
+### Two things that will bite you
 
+- **Never replace `GOOGLE_OAUTH_CLIENT_ID` once users exist.** Google's `sub` is
+  the identity key and it is scoped to the client id, so a new client id changes
+  every user's `sub`. Every linked row then matches by email with a mismatched
+  `googleId` and hits `link_conflict` — a total lockout, recoverable only by
+  hand. Rotating the *secret* alone is safe; if the id really must change, run
+  `db.users.updateMany({}, { $unset: { googleId: '' } })` first so everyone
+  relinks by email.
+- **A wrong client id or a callback URL that does not match the registered URI
+  fails on Google's error page, not on our banner.** The `?oauth=error` banner
+  only appears for failures after Google redirected back to us, so check the
+  Google Cloud console and the Render log line `[oauth] sign-in failed: …`
+  before suspecting the app.
 
+### Not fixed, on purpose
 
+- `GET /oauth/google` is unauthenticated and unrated, and each callback makes two
+  outbound calls, so anyone can drive traffic at `oauth2.googleapis.com` from the
+  Render IP. If Google ever rate-limits that IP, real sign-ins break; the cheap
+  mitigation is a limiter on the callback only. This is the documented Task 5
+  `ponytail:` tradeoff, not an oversight.
+- No PKCE. `state` covers login-CSRF; nothing covers authorization-code
+  interception. For a Web-application client the secret is not confidential, so
+  this is the missing half — but adding it is a protocol change with its own
+  test surface, not a drive-by.
+- Removing an email from `ADMIN_EMAILS` revokes admin at that user's next
+  sign-in; their already-issued access token keeps admin until it expires
+  (≤15 min, and `/refresh` re-signs from the DB, so it self-heals). This matches
+  decision D4 in the spec.

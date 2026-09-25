@@ -95,6 +95,15 @@ if (!isTest) {
       hint: 'JWT_ACCESS_SECRET is required. Set a long random value in server/.env.'
     });
   }
+  // Required in every env, not just production: the first entry is where a
+  // completed Google sign-in lands, so an empty list would redirect to the
+  // relative "undefined/" and sign the user in on a 404 page.
+  if (parsed.data.CLIENT_ORIGIN.length === 0) {
+    missing.push({
+      key: 'CLIENT_ORIGIN',
+      hint: 'CLIENT_ORIGIN is required. List the app origin users land on after sign-in, e.g. http://localhost:5173.'
+    });
+  }
   if (missing.length > 0) {
     for (const m of missing) console.error(m.hint);
     process.exit(1);
