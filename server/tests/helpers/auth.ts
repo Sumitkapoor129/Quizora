@@ -8,8 +8,8 @@ import argon2 from 'argon2';
 
 /**
  * Seeded users still get a real password hash: the schema requires one, and
- * student-portal.test.ts's password-change tests verify it. Must stay in sync
- * with that file's local `PASSWORD`.
+ * student-portal.test.ts's password-change tests verify it. Temporary — the
+ * password task deletes this, the argon2 import and those tests together.
  */
 export const TEST_PASSWORD = 'password123';
 

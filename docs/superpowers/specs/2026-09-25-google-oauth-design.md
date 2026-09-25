@@ -372,10 +372,22 @@ export async function createTestSession(opts?: { role?: 'ADMIN' | 'STUDENT'; ema
 ```
 
 `seedUser` creates the `User` alone. `createTestSession` is `seedUser` plus a real
-`RefreshSession` and a signed access token (via `signAccessToken` from
-`services/session.ts`) — `/me` requires a live session, so a cookie without one is
-not an authenticated user. Cookies are returned as ready-made `Cookie` header
-values (`accessToken=…`), so no file scrapes `set-cookie` any more.
+`RefreshSession` and a signed access token (via `signAccessToken` and
+`newRefreshToken` from `services/session.ts` — imported, never re-derived) — `/me`
+requires a live session, so a cookie without one is not an authenticated user.
+Cookies are returned as ready-made `Cookie` header values (`accessToken=…`), so no
+file scrapes `set-cookie` any more.
+
+Two constraints that are easy to trip over:
+
+- **The `src` imports inside the helper must be dynamic `await import(...)`.** Test
+  files assign `process.env.UPLOAD_DIR` in `beforeAll` and only then import `src`;
+  a static import in the helper would evaluate `config/env.ts` first and freeze
+  `UPLOAD_DIR` at its `'uploads'` default. Any new test module that imports `src`
+  has the same constraint.
+- **The helper seeds a real argon2 `passwordHash` until the schema stops requiring
+  one** (Task 4, same phase). That wart, and the `argon2` import, are deleted in
+  Task 4 — before `argon2` is removed from `package.json`, or the suite breaks.
 
 ### 7.3 Existing server tests
 

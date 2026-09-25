@@ -280,10 +280,26 @@ Ten server test files reference `POST /api/auth/login` today: seven authenticate
 - [ ] **Step 1: Create `server/tests/helpers/auth.ts`**
 
 ```ts
-import { createHash, randomBytes } from 'node:crypto';
-import { RefreshSession } from '../../src/models/RefreshSession.js';
-import { User } from '../../src/models/User.js';
-import { REFRESH_TTL_MS, signAccessToken } from '../../src/services/session.js';
+import { randomBytes } from 'node:crypto';
+import argon2 from 'argon2';
+
+// The `src` imports below are deliberately dynamic. Test files assign
+// process.env.UPLOAD_DIR in beforeAll and then import src on purpose; a static
+// import here would evaluate config/env.ts (via services/session.ts) before that
+// assignment and freeze UPLOAD_DIR at its 'uploads' default.
+
+/**
+ * Seeded users still get a real password hash: the User schema requires one
+ * until Task 4, and student-portal's password tests verify it. Temporary —
+ * Task 4 deletes this, argon2 and the tests that need it.
+ */
+export const TEST_PASSWORD = 'password123';
+
+let passwordHash: string | undefined;
+/** argon2 is deliberately slow, so hash once per test file and reuse it. */
+async function testPasswordHash(): Promise<string> {
+  return (passwordHash ??= await argon2.hash(TEST_PASSWORD, { type: argon2.argon2id }));
+}
 
 export interface SeededUser {
   id: string;
@@ -307,11 +323,13 @@ function uniqueEmail(): string {
 }
 
 export async function seedUser(opts: SeedOptions = {}): Promise<SeededUser> {
+  const { User } = await import('../../src/models/User.js');
   const email = opts.email ?? uniqueEmail();
   const user = await User.create({
     email,
     name: opts.name ?? 'Test User',
-    role: opts.role ?? 'STUDENT'
+    role: opts.role ?? 'STUDENT',
+    passwordHash: await testPasswordHash()
   });
   return { id: String(user._id), email, name: user.name, role: user.role };
 }
@@ -330,15 +348,12 @@ export interface TestSession extends SeededUser {
  * RefreshSession, so a cookie without one is not an authenticated user.
  */
 export async function createTestSession(opts: SeedOptions = {}): Promise<TestSession> {
+  const { RefreshSession } = await import('../../src/models/RefreshSession.js');
+  const { REFRESH_TTL_MS, newRefreshToken, signAccessToken } = await import('../../src/services/session.js');
   const user = await seedUser(opts);
-  const raw = randomBytes(48).toString('base64url');
+  const { raw, hash } = newRefreshToken();
   const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
-  await RefreshSession.create({
-    userId: user.id,
-    tokenHash: createHash('sha256').update(raw).digest('hex'),
-    expiresAt,
-    revokedAt: null
-  });
+  await RefreshSession.create({ userId: user.id, tokenHash: hash, expiresAt, revokedAt: null });
   const accessToken = signAccessToken({
     _id: user.id,
     email: user.email,
@@ -354,26 +369,48 @@ export async function createTestSession(opts: SeedOptions = {}): Promise<TestSes
 }
 ```
 
+Use `newRefreshToken()` from the service — never re-derive the sha256 token hash
+here. This file is the single source of truth for test session setup, so a
+divergent copy of the server's crypto would fail somewhere far from its cause.
+
 - [ ] **Step 2: Migrate one test file and prove the helper works**
 
-Take `server/tests/resources.test.ts` as the pilot. It currently has a local login helper of this shape:
+Take `server/tests/resources.test.ts` as the pilot. Its local helper is named
+`seedUser` — which would collide with the imported `seedUser`, so it must be
+deleted, not kept:
 
 ```ts
-async function loginAsAdmin() { /* POST /api/auth/login with email+password, then scrape accessToken */ }
+  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<{ id: string; cookie: string }> {
+    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
+    await User.create({ email, name, passwordHash, role });
+    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
+    return { id: String(login.body.user.id), cookie: cookiePair(login, 'accessToken')! };
+  }
 ```
 
-Replace it with:
+Delete it, plus the local `cookiePair`, the `PASSWORD` constant and the `argon2`
+import, and add `import { createTestSession } from './helpers/auth.js';`. Then
+rewrite the `beforeAll` seeding, keeping the module-level variables the test
+bodies read:
 
 ```ts
-import { createTestSession } from './helpers/auth.js';
-
-async function loginAsAdmin() {
-  const session = await createTestSession({ role: 'ADMIN' });
-  return { id: session.id, cookie: session.accessCookie };
-}
+  const admin = await createTestSession({ role: 'ADMIN' });
+  adminCookie = admin.accessCookie;
+  adminId = admin.id;
+  const s1 = await createTestSession({ role: 'STUDENT' });
+  studentCookie = s1.accessCookie;
 ```
 
-Delete the local `cookiePair` helper and the seeded-password constants it needed. Keep every test body and assertion unchanged.
+**Two rules for every migrated file:**
+
+- **Pass an explicit `email` wherever a test asserts on it.** The helper generates
+  a unique email per call, so `createTestSession()` with no `email` changes what
+  an assertion sees. Wherever the old code passed a literal address that a test
+  body or response assertion refers to, pass it through:
+  `createTestSession({ role: 'STUDENT', email: 's2@example.com', name: 'Student Two' })`.
+- **Keep every test body and assertion byte-identical.** This task changes
+  authentication plumbing only. If a test body needs editing to accommodate the
+  helper, that is a signal the helper is wrong, not the test.
 
 - [ ] **Step 3: Run that file's tests**
 
@@ -382,7 +419,9 @@ Expected: PASS (10 tests), unchanged count.
 
 - [ ] **Step 4: Migrate the remaining files the same way**
 
-For each of `admin-attempts.test.ts`, `import-admin.test.ts`, `student-exam.test.ts`, `student-portal.test.ts`, `tests-admin.test.ts`, `admin-analytics.test.ts`: delete its local login + `cookiePair` helper and its `argon2.hash` seeding, import `createTestSession` from `./helpers/auth.js`, and keep every test body identical. `admin-analytics.test.ts` scrapes cookies with a different expression — it becomes `session.accessCookie` too. `health.test.ts` only asserts a 401 shape and does not authenticate; leave it alone unless it imports a deleted helper.
+For each of `admin-attempts.test.ts`, `import-admin.test.ts`, `student-exam.test.ts`, `student-portal.test.ts`, `tests-admin.test.ts`, `admin-analytics.test.ts`: delete its local `seedUser` + `cookiePair` helper (all six have the same shape as the pilot), its `PASSWORD` constant and its `argon2` import; import `createTestSession` from `./helpers/auth.js`; rewrite the `beforeAll` seeding. `admin-analytics.test.ts` has no `cookiePair` — it scrapes `login.headers['set-cookie']` inline at line 75; it becomes `session.accessCookie` like the rest. `health.test.ts` only asserts a 401 shape and does not authenticate; leave it alone.
+
+`student-portal.test.ts` is the exception that still mentions `/api/auth/login` after this task: its three password-change tests log in with the new and old password (lines 233-240). Task 4 deletes those tests, so leave them exactly as they are.
 
 - [ ] **Step 5: Run the full server suite and typecheck**
 
@@ -395,7 +434,7 @@ Expected: exit 0.
 - [ ] **Step 6: Confirm no test file still calls the login route for authentication**
 
 Run: `cd server && rg -n "auth/login" tests/`
-Expected: matches only inside `auth.test.ts`, `auth-otp.test.ts` and `auth-password-reset.test.ts` — the three files that are about login itself, handled in Task 4 — plus any comment. If a migrated file still matches, fix it now.
+Expected: matches only in `auth.test.ts`, `auth-otp.test.ts`, `auth-password-reset.test.ts` (the three files that are about login itself, rewritten or deleted in Task 4) and `student-portal.test.ts` (its password-change tests, deleted in Task 4), plus any comment. If any OTHER file still matches, its `seedUser` migration was incomplete — fix it now.
 
 - [ ] **Step 7: Commit**
 
@@ -579,7 +618,7 @@ Removes password login, the OTP model, the mailer and their config. **After this
 
 **Files:**
 - Delete: `server/src/models/EmailOtp.ts`, `server/src/services/mailer.ts`, `server/tests/auth-otp.test.ts`, `server/tests/auth-password-reset.test.ts`
-- Modify: `server/src/models/User.ts`, `server/src/routes/auth.ts`, `server/src/routes/student.ts`, `server/src/config/env.ts`, `server/vitest.config.ts`, `.env.example`, `server/package.json`, `server/tests/auth.test.ts`, `server/tests/db-harness.test.ts`, `server/tests/student-portal.test.ts`
+- Modify: `server/src/models/User.ts`, `server/src/routes/auth.ts`, `server/src/routes/student.ts`, `server/src/config/env.ts`, `server/vitest.config.ts`, `.env.example`, `server/package.json`, `server/tests/auth.test.ts`, `server/tests/db-harness.test.ts`, `server/tests/student-portal.test.ts`, **`server/tests/helpers/auth.ts`**
 
 **Interfaces:**
 - Consumes: `services/session.ts` and `seedUser`/`createTestSession` (Tasks 1-2)
@@ -701,6 +740,8 @@ ADMIN_EMAILS=
 ```
 
 - [ ] **Step 7: Remove the dependencies**
+
+**First, strip the temporary argon2 seeding from `server/tests/helpers/auth.ts`** — it exists only because the `User` schema still required `passwordHash`. Delete the `argon2` import, `TEST_PASSWORD`, `passwordHash`, `testPasswordHash()` and the `passwordHash:` field in `seedUser`'s `User.create`. Then `student-portal.test.ts` loses its `PASSWORD` constant and its `import { TEST_PASSWORD }` line along with the three password tests. Doing this before `npm install` is what keeps the suite runnable.
 
 `server/package.json`: remove `"argon2"` and `"nodemailer"` from `dependencies` and `"@types/nodemailer"` from `devDependencies`. Run `cd server && npm install` to update `package-lock.json`.
 
