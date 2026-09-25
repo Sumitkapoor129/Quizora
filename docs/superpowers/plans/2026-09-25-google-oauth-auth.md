@@ -21,7 +21,7 @@
 - **TDD:** every new behaviour gets a test that is written, run, and watched fail for the right reason before the code is written. Pure refactors (Task 1's extraction) are guarded by the existing suite, which must stay green.
 - **Never leak secrets to the browser:** no Google error string, no client secret, no token ever reaches a response body. Callback failures log the reason server-side and redirect to `/login?oauth=error`.
 - **`CLIENT_ORIGINS[0]` is the app origin.** The post-sign-in redirect target is `env.CLIENT_ORIGINS[0]`, never `new URL(OAUTH_CALLBACK_URL).origin` (that is the server, which 404s in development).
-- **Tasks 4 and 5 are one deploy unit.** Task 4 removes the last way to sign in; Task 5 restores it. Never deploy between them.
+- **Tasks 1–5 are one deploy unit.** Task 1 makes four unset env vars fatal in production, and Task 4 removes the last way to sign in; Task 5 restores it. **Never deploy this branch before Task 5 is merged** — at any point from Task 1 onward, a Render deploy without the four new env vars is an immediate crash loop, and a deploy at Task 4 leaves nobody able to sign in. Tasks 6 (client) and 7 (verification) are independently deployable afterwards.
 - **Verification gates per task:** `cd server && npm run typecheck` and `cd client && npm run typecheck` where the task touches that side.
 
 ---
@@ -88,7 +88,7 @@ Add four entries to `envSchema` (after the `CLIENT_ORIGIN` entry, keeping `SMTP_
   // production fail-fast below is what guarantees they are set where it counts.
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
-  OAUTH_CALLBACK_URL: z.string().url().optional(),
+  OAUTH_CALLBACK_URL: z.string().url().refine((u) => u.startsWith('http'), 'Must be an http(s) URL.').optional(),
   // Comma-separated emails that resolve to role ADMIN on every Google sign-in.
   ADMIN_EMAILS: z.string().default(''),
 ```
