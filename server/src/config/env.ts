@@ -14,6 +14,17 @@ export function parseEmailList(raw: string): Set<string> {
   return new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 }
 
+/** The subset of the validated env that the production gate inspects. */
+export type ProductionConfig = {
+  NODE_ENV: string;
+  GOOGLE_OAUTH_CLIENT_ID?: string;
+  GOOGLE_OAUTH_CLIENT_SECRET?: string;
+  OAUTH_CALLBACK_URL?: string;
+  ADMIN_EMAILS: string;
+  COOKIE_SECURE: boolean;
+  CLIENT_ORIGIN: string[];
+};
+
 /**
  * A completed Google sign-in redirects to the FIRST client origin, so a dev-first
  * or empty list breaks sign-in in production. Returns the boot error, or null.
@@ -25,7 +36,12 @@ export function appOriginProblem(origins: string[]): string | null {
   if (!first) {
     return '[env] CLIENT_ORIGIN is required in production (comma-separated; the first entry is where sign-in redirects to).';
   }
-  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(first)) {
+  if (!/^https?:\/\//i.test(first)) {
+    return `[env] CLIENT_ORIGIN must start with http:// or https://, but its first entry is "${first}". Sign-in would redirect users there.`;
+  }
+  // Anchored on the authority terminator so a public domain that merely starts
+  // with "localhost" (https://localhost.example.com) is not rejected.
+  if (/^https?:\/\/(localhost|127(?:\.\d+){1,3}|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(first)) {
     return `[env] CLIENT_ORIGIN must list the production app first, but its first entry is "${first}". Sign-in would redirect users there.`;
   }
   return null;
@@ -85,32 +101,41 @@ if (!isTest) {
   }
 }
 
-if (parsed.data.NODE_ENV === 'production') {
+/**
+ * Every production boot blocker, as messages. Pure and exported so it can be
+ * tested directly: the real block below calls process.exit() at import time, so
+ * without this seam the checks themselves would be untested.
+ */
+export function productionProblems(d: ProductionConfig): string[] {
+  if (d.NODE_ENV !== 'production') return [];
   const problems: string[] = [];
-  if (!parsed.data.GOOGLE_OAUTH_CLIENT_ID) {
+  if (!d.GOOGLE_OAUTH_CLIENT_ID) {
     problems.push('[env] GOOGLE_OAUTH_CLIENT_ID is required in production (Google Cloud OAuth client).');
   }
-  if (!parsed.data.GOOGLE_OAUTH_CLIENT_SECRET) {
+  if (!d.GOOGLE_OAUTH_CLIENT_SECRET) {
     problems.push('[env] GOOGLE_OAUTH_CLIENT_SECRET is required in production (Google Cloud OAuth client).');
   }
-  if (!parsed.data.OAUTH_CALLBACK_URL) {
+  if (!d.OAUTH_CALLBACK_URL) {
     problems.push('[env] OAUTH_CALLBACK_URL is required in production (the /api/auth/oauth/google/callback URL).');
   }
-  if (parseEmailList(parsed.data.ADMIN_EMAILS).size === 0) {
+  if (parseEmailList(d.ADMIN_EMAILS).size === 0) {
     problems.push('[env] ADMIN_EMAILS is required in production (comma-separated admin emails; an empty list would demote every admin on their next sign-in).');
   }
-  if (!parsed.data.COOKIE_SECURE) {
+  if (!d.COOKIE_SECURE) {
     problems.push('[env] COOKIE_SECURE must be "true" in production (secure cookies require HTTPS).');
   }
   // The FIRST client origin is where a completed Google sign-in lands, so a
   // dev-first list (or an empty one) would send every user to localhost, or to
   // the relative "undefined/". Fail loudly at boot instead of at first sign-in.
-  const originProblem = appOriginProblem(parsed.data.CLIENT_ORIGIN);
+  const originProblem = appOriginProblem(d.CLIENT_ORIGIN);
   if (originProblem) problems.push(originProblem);
-  if (problems.length > 0) {
-    for (const p of problems) console.error(p);
-    process.exit(1);
-  }
+  return problems;
+}
+
+const problems = productionProblems(parsed.data);
+if (problems.length > 0) {
+  for (const p of problems) console.error(p);
+  process.exit(1);
 }
 
 export const env = {

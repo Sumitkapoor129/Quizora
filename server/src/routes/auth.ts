@@ -100,8 +100,9 @@ function clearOauthCookies(res: Response): void {
 /** Log the reason server-side; never leak a Google error string to the browser. */
 function failOauth(res: Response, reason: string): void {
   // The reason can echo a Google-supplied `error` value, so strip anything that
-  // could forge a log line or drive a terminal.
-  const safe = reason.replace(/[\p{Cc}\p{Cf}]/gu, '');
+  // could forge a log line or drive a terminal: Cc covers ESC (ANSI + OSC-8),
+  // Cf covers bidi overrides, and Zl/Zp are line terminators to log shippers.
+  const safe = reason.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').slice(0, 200);
   console.warn(`[oauth] sign-in failed: ${safe}`);
   res.redirect(302, `${appOrigin()}/login?oauth=error`);
 }

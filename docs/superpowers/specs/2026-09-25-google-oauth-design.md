@@ -174,7 +174,10 @@ A regression test asserts the callback is not 403'd when the request carries
       (c) else by email, and user.googleId is a DIFFERENT sub
                                                  → fail('link_conflict')
       (d) else User.create({ googleId: profile.sub, email, name, role })
-    In (a), (b) and (d) the role is always re-assigned per D4.
+    In (a) and (b) the role is re-assigned per D4; in (d) it is set at creation.
+    The duplicate-key catch inside (d) adopts the winner's row only when that row
+    already belongs to `profile.sub`; otherwise it rethrows rather than hand one
+    Google identity another identity's account.
     In (c) the email was reassigned to a new owner (recycled domain, lapsed
     Workspace seat). Re-pointing googleId would hand the previous holder's
     attempts and results to the newcomer, so refuse. Recovery is manual: clear
