@@ -135,6 +135,8 @@ describe('GET /api/auth/oauth/google', () => {
     const raw = rawCookieOf(res, 'oauthState') ?? '';
     expect(raw).toContain('HttpOnly');
     expect(raw).toContain('Path=/api/auth/oauth');
+    // The state must expire on its own, not live until the browser closes.
+    expect(raw).toContain('Max-Age=600');
   });
 
   it('carries next, and drops anything that is not a plain in-app path', async () => {
@@ -327,5 +329,85 @@ describe('GET /api/auth/oauth/google/callback', () => {
       .set('Referer', 'https://accounts.google.com/');
     expect(refresh.status).toBe(403);
     expect(refresh.body.error.code).toBe('ORIGIN_FORBIDDEN');
+  });
+
+  // Pins the exemption to one exact path. Widening it to a prefix would let
+  // Google's foreign Referer open the start route and /me as well.
+  it('still origin-checks the start route and /me with Google\'s Referer', async () => {
+    for (const path of ['/api/auth/oauth/google', '/api/auth/me']) {
+      const res = await request(app).get(path).set('Referer', 'https://accounts.google.com/');
+      expect(res.status, path).toBe(403);
+      expect(res.body.error.code, path).toBe('ORIGIN_FORBIDDEN');
+    }
+  });
+});
+
+describe('a hostile cookie or profile cannot steer the redirect', () => {
+  // The start route sanitises `next`, so nothing proves the callback re-checks
+  // it. A sibling-subdomain attacker can write the cookie directly, so the
+  // callback must not trust it.
+  it('re-validates a hand-written next cookie instead of trusting it', async () => {
+    stubGoogle(okProfile({ sub: 'google-sub-cookie', email: 'cookie@example.com' }));
+    const start = await startGoogle();
+
+    for (const hostile of ['//evil.example.com', '/\\evil.example.com', 'https://evil.example.com']) {
+      const res = await request(app)
+        .get(`/api/auth/oauth/google/callback?code=code-1&state=${start.state}`)
+        .set('Cookie', `oauthState=${start.state}; oauthNext=${encodeURIComponent(hostile)}`);
+
+      expect(res.status, hostile).toBe(302);
+      expect(res.headers.location, hostile).toBe(`${APP_ORIGIN}/`);
+      expect(cookieValueOf(res, 'accessToken'), hostile).toBeTruthy();
+    }
+  });
+
+  it('rejects a non-boolean email_verified, including the string "false"', async () => {
+    for (const flag of [false, 'false', undefined] as const) {
+      stubGoogle(okProfile({ sub: `google-sub-unverified-${String(flag)}`, email: `unverified-${String(flag)}@example.com`, email_verified: flag }));
+      const start = await startGoogle();
+      const before = await User.countDocuments({});
+
+      const res = await request(app)
+        .get(`/api/auth/oauth/google/callback?code=code-1&state=${start.state}`)
+        .set('Cookie', start.cookie);
+
+      await expectSignedOut(res, before);
+    }
+  });
+});
+
+describe('account linking refuses to hand an account to a second Google identity', () => {
+  // An institutional address that gets reassigned (recycled domain, lapsed
+  // Workspace seat) would otherwise silently transfer the previous holder's
+  // attempts and results to whoever holds it next. Fail closed instead.
+  it('does not re-point googleId when the matched email belongs to another sub', async () => {
+    const original = await seedUser({ name: 'Original Owner' });
+    await User.updateOne({ email: original.email }, { $set: { googleId: 'google-sub-original' } });
+    const before = await User.countDocuments({});
+
+    stubGoogle(okProfile({ sub: 'google-sub-newcomer', email: original.email }));
+    const start = await startGoogle();
+    const res = await request(app)
+      .get(`/api/auth/oauth/google/callback?code=code-1&state=${start.state}`)
+      .set('Cookie', start.cookie);
+
+    await expectSignedOut(res, before);
+    const stillThere = await User.findOne({ email: original.email });
+    expect(stillThere?.googleId).toBe('google-sub-original');
+    expect(await User.countDocuments({ googleId: 'google-sub-newcomer' })).toBe(0);
+  });
+
+  it('still links a genuinely pre-OAuth account (no googleId yet)', async () => {
+    const legacy = await seedUser({ name: 'Legacy Owner' });
+    expect((await User.findOne({ email: legacy.email }))?.googleId).toBeUndefined();
+
+    stubGoogle(okProfile({ sub: 'google-sub-legacy', email: legacy.email }));
+    const start = await startGoogle();
+    const res = await request(app)
+      .get(`/api/auth/oauth/google/callback?code=code-1&state=${start.state}`)
+      .set('Cookie', start.cookie);
+
+    expect(res.status).toBe(302);
+    expect((await User.findOne({ email: legacy.email }))?.googleId).toBe('google-sub-legacy');
   });
 });

@@ -86,7 +86,9 @@ function safeNext(raw: unknown): string {
   if (typeof raw !== 'string' || raw === '') return '/';
   if (!raw.startsWith('/')) return '/';
   if (raw.startsWith('//')) return '/';
-  if (raw.includes('\\')) return '/';
+  // Backslash is what makes `/\evil` and `/\/evil` protocol-relative for a
+  // browser that normalises it. Control characters and spaces are not real paths.
+  if (/[\\\s\u0000-\u001f\u007f]/.test(raw)) return '/';
   return raw;
 }
 
@@ -97,7 +99,10 @@ function clearOauthCookies(res: Response): void {
 
 /** Log the reason server-side; never leak a Google error string to the browser. */
 function failOauth(res: Response, reason: string): void {
-  console.warn(`[oauth] sign-in failed: ${reason}`);
+  // The reason can echo a Google-supplied `error` value, so strip anything that
+  // could forge a log line or drive a terminal.
+  const safe = reason.replace(/[\p{Cc}\p{Cf}]/gu, '');
+  console.warn(`[oauth] sign-in failed: ${safe}`);
   res.redirect(302, `${appOrigin()}/login?oauth=error`);
 }
 
@@ -107,10 +112,19 @@ function failOauth(res: Response, reason: string): void {
  * role is re-evaluated from ADMIN_EMAILS on every sign-in (removing an address
  * from the list revokes admin); the display name is only ever set at creation,
  * so a name the student edited in their profile is not overwritten.
+ *
+ * Returns null when the matching email already belongs to a *different* Google
+ * identity. That happens when an institutional address is reassigned (recycled
+ * domain, lapsed Workspace seat); re-pointing googleId would silently hand the
+ * previous holder's attempts and results to the newcomer. Failing closed costs
+ * a support request and is recoverable by clearing googleId on the row.
+ * ponytail: recovery is manual (clear `googleId`, let them relink). Add an
+ * admin-only "reclaim this address" flow if that becomes a real support load.
  */
 async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'ADMIN' | 'STUDENT') {
   const existing = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
   if (existing) {
+    if (existing.googleId && existing.googleId !== profile.sub) return null;
     existing.googleId = profile.sub;
     existing.role = role;
     await existing.save();
@@ -127,7 +141,7 @@ async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'AD
     if (!isDuplicateKey(err)) throw err;
     // Two tabs finished signing in at once; the loser adopts the winner's row.
     const winner = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
-    if (!winner) throw err;
+    if (!winner || (winner.googleId && winner.googleId !== profile.sub)) throw err;
     return winner;
   }
 }
@@ -168,11 +182,14 @@ authRouter.get(
     }
 
     const email = typeof profile.email === 'string' ? profile.email.trim().toLowerCase() : '';
-    if (!email || profile.email_verified === false) return failOauth(res, 'email_unverified');
+    // `!== true` rather than `=== false`: an absent flag, or a profile that sends
+    // the string "false", is not a verified email and must not sign anyone in.
+    if (!email || profile.email_verified !== true) return failOauth(res, 'email_unverified');
 
     const next = safeNext(req.cookies?.oauthNext);
     const role = env.ADMIN_EMAIL_SET.has(email) ? 'ADMIN' : 'STUDENT';
     const user = await upsertGoogleUser(profile, email, role);
+    if (!user) return failOauth(res, 'link_conflict');
 
     await issueSession(user, res);
     res.redirect(302, `${appOrigin()}${next}`);

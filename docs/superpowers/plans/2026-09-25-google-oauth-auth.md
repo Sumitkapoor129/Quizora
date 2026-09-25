@@ -986,7 +986,7 @@ function safeNext(raw: unknown): string {
   if (typeof raw !== 'string' || raw === '') return '/';
   if (!raw.startsWith('/')) return '/';
   if (raw.startsWith('//')) return '/';
-  if (raw.includes('\\')) return '/';
+  if (/[\\\s\u0000-\u001f\u007f]/.test(raw)) return '/';
   return raw;
 }
 
@@ -1011,6 +1011,9 @@ function failOauth(res: Response, reason: string): void {
 async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'ADMIN' | 'STUDENT') {
   const existing = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
   if (existing) {
+    // A reassigned email must NOT be re-pointed: that hands the previous
+    // holder's attempts and results to the newcomer. Fail closed instead.
+    if (existing.googleId && existing.googleId !== profile.sub) return null;
     existing.googleId = profile.sub;
     existing.role = role;
     await existing.save();
@@ -1027,7 +1030,7 @@ async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'AD
     if (!isDuplicateKey(err)) throw err;
     // Two tabs finished signing in at once; the loser adopts the winner's row.
     const winner = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
-    if (!winner) throw err;
+    if (!winner || (winner.googleId && winner.googleId !== profile.sub)) throw err;
     return winner;
   }
 }
@@ -1072,11 +1075,12 @@ authRouter.get(
     }
 
     const email = typeof profile.email === 'string' ? profile.email.trim().toLowerCase() : '';
-    if (!email || profile.email_verified === false) return failOauth(res, 'email_unverified');
+    if (!email || profile.email_verified !== true) return failOauth(res, 'email_unverified');
 
     const next = safeNext(req.cookies?.oauthNext);
     const role = env.ADMIN_EMAIL_SET.has(email) ? 'ADMIN' : 'STUDENT';
     const user = await upsertGoogleUser(profile, email, role);
+    if (!user) return failOauth(res, 'link_conflict');
 
     await issueSession(user, res);
     res.redirect(302, `${appOrigin()}${next}`);

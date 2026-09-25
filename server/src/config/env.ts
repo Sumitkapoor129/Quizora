@@ -14,6 +14,23 @@ export function parseEmailList(raw: string): Set<string> {
   return new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 }
 
+/**
+ * A completed Google sign-in redirects to the FIRST client origin, so a dev-first
+ * or empty list breaks sign-in in production. Returns the boot error, or null.
+ * Extracted as a pure function because the production block itself calls
+ * process.exit() at import time and cannot be exercised in-process.
+ */
+export function appOriginProblem(origins: string[]): string | null {
+  const first = origins[0];
+  if (!first) {
+    return '[env] CLIENT_ORIGIN is required in production (comma-separated; the first entry is where sign-in redirects to).';
+  }
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])/i.test(first)) {
+    return `[env] CLIENT_ORIGIN must list the production app first, but its first entry is "${first}". Sign-in would redirect users there.`;
+  }
+  return null;
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3001),
@@ -85,6 +102,11 @@ if (parsed.data.NODE_ENV === 'production') {
   if (!parsed.data.COOKIE_SECURE) {
     problems.push('[env] COOKIE_SECURE must be "true" in production (secure cookies require HTTPS).');
   }
+  // The FIRST client origin is where a completed Google sign-in lands, so a
+  // dev-first list (or an empty one) would send every user to localhost, or to
+  // the relative "undefined/". Fail loudly at boot instead of at first sign-in.
+  const originProblem = appOriginProblem(parsed.data.CLIENT_ORIGIN);
+  if (originProblem) problems.push(originProblem);
   if (problems.length > 0) {
     for (const p of problems) console.error(p);
     process.exit(1);
