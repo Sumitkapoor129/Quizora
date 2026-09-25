@@ -34,8 +34,6 @@ const authValue: AuthContextValue = {
   sessionExpiresAt: session.sessionExpiresAt,
   status: 'authenticated',
   expired: false,
-  login: vi.fn(),
-  verifyRegister: vi.fn(),
   logout: vi.fn(),
 };
 
@@ -71,51 +69,44 @@ describe('Profile page', () => {
     expect(api.student.profile.update).toHaveBeenCalledWith({ name: 'Aisha Verma' });
   });
 
-  it('rejects mismatched passwords client-side without calling the API', async () => {
+  it('rejects a blank name client-side without calling the API', async () => {
     const user = userEvent.setup();
     renderProfile();
 
-    await user.type(screen.getByLabelText('Current password'), 'oldpass123');
-    await user.type(screen.getByLabelText('New password'), 'newpass123');
-    await user.type(screen.getByLabelText('Confirm new password'), 'different123');
-    await user.click(screen.getByRole('button', { name: 'Update password' }));
+    await user.clear(screen.getByLabelText('Full name'));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText("Passwords don't match.")).toBeInTheDocument();
+    expect(await screen.findByText('Enter a name.')).toBeInTheDocument();
     expect(api.student.profile.update).not.toHaveBeenCalled();
   });
 
-  it('maps the wrong-current-password server error onto the current password field', async () => {
+  // Google-only accounts: there is no local password to change, so the whole
+  // password form must be gone rather than merely hidden.
+  it('has no password-change section at all', () => {
+    renderProfile();
+
+    expect(screen.queryByRole('heading', { name: /change password/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/current password/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/new password/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/confirm new password/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /update password/i })).not.toBeInTheDocument();
+  });
+
+  it('maps a name validation error from the server onto the name field', async () => {
     vi.mocked(api.student.profile.update).mockRejectedValue(
-      new ApiError(400, { error: { code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' } }),
+      new ApiError(400, {
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid request body.',
+          details: [{ field: 'name', message: 'Name is too long.' }],
+        },
+      }),
     );
     const user = userEvent.setup();
     renderProfile();
 
-    await user.type(screen.getByLabelText('Current password'), 'wrongpass');
-    await user.type(screen.getByLabelText('New password'), 'newpass123');
-    await user.type(screen.getByLabelText('Confirm new password'), 'newpass123');
-    await user.click(screen.getByRole('button', { name: 'Update password' }));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    expect(await screen.findByText('Current password is incorrect.')).toBeInTheDocument();
-  });
-
-  it('clears the password fields and shows success after a valid password change', async () => {
-    vi.mocked(api.student.profile.update).mockResolvedValue(session);
-    const user = userEvent.setup();
-    renderProfile();
-
-    await user.type(screen.getByLabelText('Current password'), 'oldpass123');
-    await user.type(screen.getByLabelText('New password'), 'newpass123');
-    await user.type(screen.getByLabelText('Confirm new password'), 'newpass123');
-    await user.click(screen.getByRole('button', { name: 'Update password' }));
-
-    expect(await screen.findByText('Password updated.')).toBeInTheDocument();
-    expect(api.student.profile.update).toHaveBeenCalledWith({
-      currentPassword: 'oldpass123',
-      newPassword: 'newpass123',
-    });
-    expect(screen.getByLabelText('Current password')).toHaveValue('');
-    expect(screen.getByLabelText('New password')).toHaveValue('');
-    expect(screen.getByLabelText('Confirm new password')).toHaveValue('');
+    expect(await screen.findByText('Name is too long.')).toBeInTheDocument();
   });
 });

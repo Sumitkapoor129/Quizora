@@ -7,9 +7,6 @@ export interface AuthContextValue {
   sessionExpiresAt: string | null;
   status: AuthStatus;
   expired: boolean;
-  login: (credentials: { email: string; password: string }) => Promise<AuthUser>;
-  /** Registration step 2: exchange the emailed OTP for a session. */
-  verifyRegister: (input: { name: string; email: string; password: string; code: string }) => Promise<AuthUser>;
   logout: () => Promise<void>;
 }
 
@@ -47,25 +44,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     onSessionExpired(() => setExpired(true));
   }, []);
 
-  const login = useCallback(async ({ email, password }: { email: string; password: string }) => {
-    const data = await api.auth.login({ email, password });
-    setSession(data);
-    setStatus('authenticated');
-    setExpired(false);
-    return data.user;
-  }, []);
-
-  const verifyRegister = useCallback(
-    async ({ name, email, password, code }: { name: string; email: string; password: string; code: string }) => {
-      const data = await api.auth.verifyRegister({ name, email, password, code });
-      setSession(data);
-      setStatus('authenticated');
-      setExpired(false);
-      return data.user;
-    },
-    [],
-  );
-
   const logout = useCallback(async () => {
     try {
       await api.auth.logout();
@@ -84,11 +62,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       sessionExpiresAt: session?.sessionExpiresAt ?? null,
       status,
       expired,
-      login,
-      verifyRegister,
       logout,
     }),
-    [session, status, expired, login, verifyRegister, logout],
+    [session, status, expired, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

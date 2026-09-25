@@ -10,9 +10,6 @@ import AttemptsList from '@/pages/admin/attempts/AttemptsList';
 import TestBuilder from '@/pages/admin/tests/Builder';
 import TestsList from '@/pages/admin/tests/List';
 import Login from '@/pages/auth/Login';
-import Register from '@/pages/auth/Register';
-import ForgotPassword from '@/pages/auth/ForgotPassword';
-import ResetPassword from '@/pages/auth/ResetPassword';
 import NotFound from '@/pages/NotFound';
 import Analytics from '@/pages/admin/analytics';
 import ResourceList from '@/pages/admin/resources/ResourceList';
@@ -84,9 +81,9 @@ function ProtectedExamRoute({ role, children }: { role: Role; children: ReactNod
 export const routes: RouteObject[] = [
   { path: '/', element: <HomeRedirect /> },
   { path: '/login', element: <Login /> },
-  { path: '/register', element: <Register /> },
-  { path: '/forgot-password', element: <ForgotPassword /> },
-  { path: '/reset-password', element: <ResetPassword /> },
+  // Google is the only sign-in path; the old registration URL survives as a
+  // redirect so bookmarks and shared links land somewhere real.
+  { path: '/register', element: <Navigate to="/login" replace /> },
   {
     path: '/student',
     element: <ProtectedRoute role="student" />,

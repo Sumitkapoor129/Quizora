@@ -14,12 +14,6 @@ export interface SessionResponse {
   sessionExpiresAt: string;
 }
 
-/** Response of the OTP-sending auth endpoints (register step 1 / forgot-password). */
-export interface OtpSentResponse {
-  email: string;
-  otpExpiresAt: string;
-}
-
 export type AuthStatus = 'checking' | 'authenticated' | 'anonymous';
 
 export interface ApiErrorBody {
@@ -467,8 +461,6 @@ export interface StudentAttemptsResponse {
 
 export interface ProfileUpdateInput {
   name?: string;
-  currentPassword?: string;
-  newPassword?: string;
 }
 
 /** PATCH /api/student/profile → same shape as /auth/me. */

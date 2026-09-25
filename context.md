@@ -50,7 +50,7 @@ single-document atomic compare-and-set (`findOneAndUpdate` with status filter).
 
 - Auth: `GET /api/auth/oauth/google` + `/api/auth/oauth/google/callback` (Google OAuth since Phase 12; OTP/password routes removed), `POST /api/auth/refresh|logout`, `GET /api/auth/me`.
 - Admin: `/api/admin/tests` (+`:id`, sections, questions, reorder, publish/unpublish, image upload), `/api/admin/import/validate|confirm`, `/api/admin/attempts[:id]`, `/api/admin/students`, `/api/admin/tests/:id/analytics`, /api/admin/resources (+ POST list, `DELETE /:id`).
-- Student: `GET /api/student/tests`, `POST /api/student/tests/:id/attempts`, `POST /api/student/attempts/:id/start`, `GET /api/student/attempts/:id`, `PUT /api/student/attempts/:id/answers`, `POST /api/student/attempts/:id/events`, `POST /api/student/attempts/:id/submit`, `GET /api/student/attempts/:id/result`, `GET /api/student/attempts` (my history list), `PATCH /api/student/profile` (name / password), `GET /api/student/resources`.
+- Student: `GET /api/student/tests`, `POST /api/student/tests/:id/attempts`, `POST /api/student/attempts/:id/start`, `GET /api/student/attempts/:id`, `PUT /api/student/attempts/:id/answers`, `POST /api/student/attempts/:id/events`, `POST /api/student/attempts/:id/submit`, `GET /api/student/attempts/:id/result`, `GET /api/student/attempts` (my history list), `PATCH /api/student/profile` (name only), `GET /api/student/resources`.
 - Error shape everywhere: `{ error: { code, message, details? } }`. Codes: `UNAUTHENTICATED` (401), `FORBIDDEN` (403), zod→400 with flat `details` `[{field,message}]`. IDOR → 404 (not 403).
 
 ## 5. Phase 1 progress (foundation)

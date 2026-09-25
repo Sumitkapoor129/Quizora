@@ -17,8 +17,6 @@ function renderRouter(path: string, user: User | null) {
     sessionExpiresAt: null,
     status: user ? 'authenticated' : 'anonymous',
     expired: false,
-    login: vi.fn(),
-    verifyRegister: vi.fn(),
     logout: vi.fn(),
   };
   render(
@@ -82,6 +80,22 @@ describe('route guards', () => {
     renderRouter('/student', null);
 
     expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument();
+  });
+});
+
+describe('retired auth routes', () => {
+  it('redirects the old /register path to the Google-only login page', async () => {
+    renderRouter('/register', null);
+
+    expect(await screen.findByRole('heading', { name: 'Sign in' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /continue with google/i })).toBeInTheDocument();
+    expect(screen.queryByText('Page not found')).not.toBeInTheDocument();
+  });
+
+  it('no longer serves the password-reset pages', async () => {
+    renderRouter('/forgot-password', null);
+
+    expect(await screen.findByText('Page not found')).toBeInTheDocument();
   });
 });
 
