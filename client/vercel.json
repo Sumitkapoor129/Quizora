@@ -1,6 +1,7 @@
 {
   "rewrites": [
     { "source": "/api/(.*)", "destination": "https://quizora-ppfp.onrender.com/api/$1" },
-    { "source": "/uploads/(.*)", "destination": "https://quizora-ppfp.onrender.com/uploads/$1" }
+    { "source": "/uploads/(.*)", "destination": "https://quizora-ppfp.onrender.com/uploads/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
