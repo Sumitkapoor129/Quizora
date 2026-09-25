@@ -9,6 +9,11 @@ const secretSchema = isTest
   ? z.string().optional()
   : z.string().min(32).refine((v) => !v.includes('replace-with-a-random'), '[env] JWT secret must not be the example placeholder.').optional();
 
+/** Comma-separated allowlist -> lower-cased set. Shared shape with CLIENT_ORIGIN. */
+export function parseEmailList(raw: string): Set<string> {
+  return new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3001),
@@ -21,6 +26,13 @@ const envSchema = z.object({
     .string()
     .default('http://localhost:5173')
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
+  // Google OAuth (Phase 12). Optional so the server boots in development; the
+  // production fail-fast below is what guarantees they are set where it counts.
+  GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+  GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
+  OAUTH_CALLBACK_URL: z.string().url().optional(),
+  // Comma-separated emails that resolve to role ADMIN on every Google sign-in.
+  ADMIN_EMAILS: z.string().default(''),
   COOKIE_SECURE: z
     .enum(['true', 'false'])
     .default('false')
@@ -70,9 +82,27 @@ if (!isTest) {
   }
 }
 
-if (parsed.data.NODE_ENV === 'production' && !parsed.data.COOKIE_SECURE) {
-  console.error('[env] COOKIE_SECURE must be "true" in production (secure cookies require HTTPS).');
-  process.exit(1);
+if (parsed.data.NODE_ENV === 'production') {
+  const problems: string[] = [];
+  if (!parsed.data.GOOGLE_OAUTH_CLIENT_ID) {
+    problems.push('[env] GOOGLE_OAUTH_CLIENT_ID is required in production (Google Cloud OAuth client).');
+  }
+  if (!parsed.data.GOOGLE_OAUTH_CLIENT_SECRET) {
+    problems.push('[env] GOOGLE_OAUTH_CLIENT_SECRET is required in production (Google Cloud OAuth client).');
+  }
+  if (!parsed.data.OAUTH_CALLBACK_URL) {
+    problems.push('[env] OAUTH_CALLBACK_URL is required in production (the /api/auth/oauth/google/callback URL).');
+  }
+  if (parseEmailList(parsed.data.ADMIN_EMAILS).size === 0) {
+    problems.push('[env] ADMIN_EMAILS is required in production (comma-separated admin emails; an empty list would demote every admin on their next sign-in).');
+  }
+  if (!parsed.data.COOKIE_SECURE) {
+    problems.push('[env] COOKIE_SECURE must be "true" in production (secure cookies require HTTPS).');
+  }
+  if (problems.length > 0) {
+    for (const p of problems) console.error(p);
+    process.exit(1);
+  }
 }
 
 export const env = {
@@ -82,6 +112,10 @@ export const env = {
   JWT_ACCESS_SECRET: parsed.data.JWT_ACCESS_SECRET ?? (isTest ? 'test-access-secret' : ''),
   JWT_REFRESH_SECRET: parsed.data.JWT_REFRESH_SECRET ?? (isTest ? 'test-refresh-secret' : ''),
   CLIENT_ORIGINS: parsed.data.CLIENT_ORIGIN,
+  GOOGLE_OAUTH_CLIENT_ID: parsed.data.GOOGLE_OAUTH_CLIENT_ID ?? (isTest ? 'test-google-client-id' : ''),
+  GOOGLE_OAUTH_CLIENT_SECRET: parsed.data.GOOGLE_OAUTH_CLIENT_SECRET ?? (isTest ? 'test-google-client-secret' : ''),
+  OAUTH_CALLBACK_URL: parsed.data.OAUTH_CALLBACK_URL ?? (isTest ? 'http://localhost:3001/api/auth/oauth/google/callback' : ''),
+  ADMIN_EMAIL_SET: parseEmailList(parsed.data.ADMIN_EMAILS),
   COOKIE_SECURE: parsed.data.COOKIE_SECURE,
   UPLOAD_DIR: parsed.data.UPLOAD_DIR,
   SMTP_HOST: parsed.data.SMTP_HOST,

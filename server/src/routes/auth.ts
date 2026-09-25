@@ -1,8 +1,7 @@
-import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { randomInt, timingSafeEqual } from 'node:crypto';
 import argon2 from 'argon2';
-import { Router, type CookieOptions, type NextFunction, type Request, type Response } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
@@ -11,9 +10,17 @@ import { EmailOtp, type EmailOtpPurpose } from '../models/EmailOtp.js';
 import { RefreshSession } from '../models/RefreshSession.js';
 import { User } from '../models/User.js';
 import { sendMail } from '../services/mailer.js';
+import {
+  REFRESH_TTL_MS,
+  authBody,
+  clearAuthCookies,
+  hashToken,
+  issueSession,
+  newRefreshToken,
+  setAuthCookies,
+  signAccessToken
+} from '../services/session.js';
 
-const ACCESS_TTL_MS = 15 * 60 * 1000;
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // Replays of a just-rotated token within this window are usually two tabs
 // sharing the cookie racing on refresh, not theft. Old replays still revoke.
 const REPLAY_REVOKE_GRACE_MS = 10_000;
@@ -81,54 +88,11 @@ const loginSchema = z.object({
   password: z.string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID }).min(1, PASSWORD_INVALID)
 });
 
-type AuthUserRecord = { _id: unknown; email: string; name: string; role: string };
-
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
-function newRefreshToken(): { raw: string; hash: string } {
-  const raw = randomBytes(48).toString('base64url');
-  return { raw, hash: hashToken(raw) };
-}
-
 // Verify against a constant hash on unknown email so login response time does
 // not reveal whether an account exists (no user enumeration).
 let dummyHashPromise: Promise<string> | undefined;
 function getDummyHash(): Promise<string> {
   return (dummyHashPromise ??= argon2.hash('exampro-timing-equalizer', { type: argon2.argon2id }));
-}
-
-function signAccessToken(user: AuthUserRecord): string {
-  return jwt.sign(
-    { id: String(user._id), email: user.email, role: user.role, type: 'access' },
-    env.JWT_ACCESS_SECRET,
-    { algorithm: 'HS256', expiresIn: ACCESS_TTL_MS / 1000 }
-  );
-}
-
-const cookieBase: CookieOptions = {
-  httpOnly: true,
-  secure: env.COOKIE_SECURE,
-  sameSite: env.COOKIE_SECURE ? 'none' : 'lax',
-  path: '/'
-};
-
-function setAuthCookies(res: Response, accessToken: string, refreshToken: string, refreshExpiresAt: Date): void {
-  res.cookie('accessToken', accessToken, { ...cookieBase, maxAge: ACCESS_TTL_MS });
-  res.cookie('refreshToken', refreshToken, { ...cookieBase, expires: refreshExpiresAt });
-}
-
-function clearAuthCookies(res: Response): void {
-  res.clearCookie('accessToken', cookieBase);
-  res.clearCookie('refreshToken', cookieBase);
-}
-
-function authBody(user: AuthUserRecord, sessionExpiresAt: Date): object {
-  return {
-    user: { id: String(user._id), email: user.email, name: user.name, role: user.role },
-    sessionExpiresAt: sessionExpiresAt.toISOString()
-  };
 }
 
 function isDuplicateKey(err: unknown): boolean {
@@ -222,13 +186,6 @@ async function verifyEmailOtp(email: string, purpose: EmailOtpPurpose, code: str
   await otp.deleteOne();
 }
 
-async function issueSession(user: AuthUserRecord): Promise<{ raw: string; expiresAt: Date }> {
-  const { raw, hash } = newRefreshToken();
-  const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
-  await RefreshSession.create({ userId: user._id, tokenHash: hash, expiresAt, revokedAt: null });
-  return { raw, expiresAt };
-}
-
 export const authRouter = Router();
 
 authRouter.post(
@@ -270,9 +227,8 @@ authRouter.post(
       throw err;
     }
 
-    const session = await issueSession(user);
-    setAuthCookies(res, signAccessToken(user), session.raw, session.expiresAt);
-    res.status(201).json(authBody(user, session.expiresAt));
+    const expiresAt = await issueSession(user, res);
+    res.status(201).json(authBody(user, expiresAt));
   })
 );
 
@@ -330,9 +286,8 @@ authRouter.post(
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
     }
 
-    const session = await issueSession(user);
-    setAuthCookies(res, signAccessToken(user), session.raw, session.expiresAt);
-    res.json(authBody(user, session.expiresAt));
+    const expiresAt = await issueSession(user, res);
+    res.json(authBody(user, expiresAt));
   })
 );
 
