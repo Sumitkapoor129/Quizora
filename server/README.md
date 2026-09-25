@@ -28,8 +28,8 @@ cp .env.example .env   # then fill in MONGODB_URI and secrets
 | `npm run dev`      | Start dev server with hot reload (tsx watch)              |
 | `npm run build`    | Type-check and compile to `dist/` (tsc)                   |
 | `npm start`        | Run the compiled server (`node dist/server.js`)           |
-| `npm test`         | Run the vitest suite (health, error shape, auth, DB)      |
-| `npm run typecheck`| Type-check only (`tsc --noEmit`)                          |
+| `npm test`         | Run the vitest suite (12 files, 143 tests)                |
+| `npm run typecheck`| Type-check only (`tsc --noEmit`) — excludes `tests/`      |
 
 `npm run dev` / `npm start` refuse to boot with a clear message when
 `MONGODB_URI` is missing.
@@ -52,7 +52,13 @@ cp .env.example .env   # then fill in MONGODB_URI and secrets
 ## API
 
 - `GET /health` — liveness probe, no DB required: `{ ok, service, time }`.
-- Phase 2 adds the auth / test / attempt routes under `/api/...`.
+- `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/auth/me` — session lifecycle.
+- Test / attempt / admin / student routes under `/api/...`.
+
+> **No sign-in route exists on this branch.** The password, OTP and password-reset
+> endpoints are gone and `GET /api/auth/oauth/google` has not landed yet. Do not
+> deploy this state — the Google routes ship in the same unit as the client
+> changes that call them.
 
 ## Structure
 
@@ -65,5 +71,7 @@ src/
   errors.ts       AppError
   middleware/     errorHandler, notFound, originCheck, auth (authenticate, requireRole)
   models/         User, RefreshSession, Test, TestAttempt (embedded design)
+  routes/         auth, student, admin, analytics, import, resources
+  services/       session (tokens + cookies), googleOAuth (protocol)
 tests/            vitest suite
 ```

@@ -1027,7 +1027,7 @@ async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'AD
 }
 ```
 
-Add the imports `buildAuthUrl, exchangeCode, fetchProfile, type GoogleProfile` from `../services/googleOAuth.js` and `randomBytes` from `node:crypto`.
+Add the imports `buildAuthUrl, exchangeCode, fetchProfile, type GoogleProfile` from `../services/googleOAuth.js`, `randomBytes` from `node:crypto`, `type CookieOptions` from `express` (for `oauthCookieBase`) and `issueSession` from `../services/session.js`. Task 4 deliberately left all four out of `auth.ts` rather than park unused imports; `isDuplicateKey` (`auth.ts:22`) is likewise kept-but-unreferenced by Task 4 and is consumed by the callback below — if it is still unused when this task is done, something was missed.
 
 Then register the routes above the `/refresh` handler:
 

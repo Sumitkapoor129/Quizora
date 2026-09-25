@@ -33,7 +33,7 @@ Tests, Resources.
 Single-doc = whole entity. No multi-doc transactions needed: critical paths use
 single-document atomic compare-and-set (`findOneAndUpdate` with status filter).
 
-- **`User`** — email (unique idx, lowercase), passwordHash, name, role `ADMIN|STUDENT`.
+- **`User`** — email (unique idx, lowercase), googleId (unique, sparse — null until first Google sign-in), name, role `ADMIN|STUDENT`.
 - **`RefreshSession`** — userId, tokenHash (unique), previousTokenHash (replay detection), expiresAt, revokedAt.
 - **`Test`** — status `DRAFT|PUBLISHED|ARCHIVED`, defaultNegativeMarks, deletedAt, embedded `sections[]` → each `{title, order, durationSec, negativeMarksOverride?, questions[]}` → each question `{type SINGLE|MULTI, order, text?, imageUrl?, marks, negativeMarks?, explanation?, options[]}` → option `{order, text?, imageUrl?, isCorrect}`.
 - **`TestAttempt`** — status `GATED|IN_PROGRESS|SUBMITTED|TIMED_OUT`, warningCount, score fields, voided, embedded `sectionAttempts[]` (per-section `endAt` — server-set cumulative time windows), `answers[]` (questionId + selectedOptionIds), `events[]` (typed, capped, `FULLSCREEN_EXIT|COPY|PASTE|CUT|CONTEXT_MENU|VISIBILITY_HIDDEN|FOCUS_LOST|NETWORK_RECONNECT|START|SUBMIT`). Unique index `{testId, studentId}` = one attempt per student per test.
@@ -85,7 +85,7 @@ Full approved UX spec: auth copy/validation table, session-expiry banner pattern
 ### DONE + VERIFIED — Phase 2 (Auth + RBAC) ✅ (session 2026-09-21)
 Server: `src/routes/auth.ts` (register 201 / login / refresh / logout 204 / me), argon2id, HS256 access JWT (15min httpOnly cookie) + opaque 48-byte refresh token (7d, sha256-stored, atomic rotation CAS, replay detection — `REPLAY_REVOKE_GRACE_MS=10s` via new `rotatedAt` so two-tab refresh races don't revoke a legit session), per-route express-rate-limit, zod validation with exact spec copy + flat details, login timing-equalizer (dummy argon2 verify, no user enumeration), `RefreshSession.expiresAt` TTL index, env JWT secrets min(32) + refuse the example placeholder. Tests `tests/auth.test.ts` 13 → suite 18/18; `npm run build` clean.
 Client: real AuthContext (single-flight refresh; `/me` refresh-recovery), session-expiry banner + `inert` veil (`SessionExpiryBanner.tsx` in AppLayout), hardened `safeNext`, next-aware post-login/register redirects, `AccessDenied` route (UX spec §5 role-mismatch), admin-drawer a11y (Escape/trap/focus-return, closed-sidebar not focusable), demo role selector + `DEMO_TESTS` removed. Tests 12/12 (added SessionExpiryBanner + AccessDenied/routes); build + typecheck clean.
-Notes: **client `api/client.ts` is source-of-truth for the auth wire contract** (match it server-side). Deferred (logged): logout-failure retry/error surface; `JWT_REFRESH_SECRET` now dead config (opaque tokens) but kept to avoid churn; `trust proxy` note for Phase 9 deploy docs.
+Notes: **client `api/client.ts` is source-of-truth for the auth wire contract** (match it server-side). Deferred (logged): logout-failure retry/error surface; ~~`JWT_REFRESH_SECRET` dead config~~ — removed in Phase 12 along with the password auth it belonged to; `trust proxy` note for Phase 9 deploy docs.
 
 ## 6. ✅ RESOLVED — token/brand reconciliation (decided via approved default)
 
@@ -165,7 +165,7 @@ cd client && npm run build   # verified green every phase (latest: Phase 6)
 
 ## 9. Environment / env vars (server/.env)
 
-`PORT=3001`, `MONGODB_URI=` (blank → boot refuses with helpful message), `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `CLIENT_ORIGIN=http://localhost:5173`, `COOKIE_SECURE=false`, `NODE_ENV=development`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `OAUTH_CALLBACK_URL=http://localhost:3001/api/auth/oauth/google/callback`, `ADMIN_EMAILS=` (comma list → ADMIN role on Google sign-in; since Phase 12). SMTP/OTP vars removed. Client uses `VITE_API_URL` (default `http://localhost:3001`).
+`PORT=3001`, `MONGODB_URI=` (blank → boot refuses with helpful message), `JWT_ACCESS_SECRET`, `CLIENT_ORIGIN=http://localhost:5173`, `COOKIE_SECURE=false`, `NODE_ENV=development`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `OAUTH_CALLBACK_URL=http://localhost:3001/api/auth/oauth/google/callback`, `ADMIN_EMAILS=` (comma list → ADMIN role on Google sign-in; since Phase 12). `JWT_REFRESH_SECRET` + SMTP/OTP vars removed. Client uses `VITE_API_URL` (default `http://localhost:3001`).
 
 ## 10. Subagent config + recommendations
 
