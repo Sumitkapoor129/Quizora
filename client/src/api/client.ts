@@ -28,7 +28,15 @@ import type {
   ValidateImportResponse,
 } from '@/types';
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:3001' : '');
+// In production the browser must reach the backend host directly, not the
+// Vercel /api proxy. The OAuth start sets a host-only `oauthState` cookie and
+// Google sends its callback to the backend host, so both hops must share that
+// host or state validation always fails. The server issues sameSite=None
+// cookies with credentialed CORS for this cross-site setup. VITE_API_URL, if
+// set at build time, overrides this.
+const BASE_URL =
+  import.meta.env.VITE_API_URL ??
+  (import.meta.env.DEV ? 'http://localhost:3001' : 'https://quizora-ppfp.onrender.com');
 
 /** Absolute URL for a relative asset path (e.g. `/uploads/x.png`). */
 export const assetUrl = (path?: string | null): string => (path ? `${BASE_URL}${path}` : '');
@@ -156,8 +164,9 @@ export const api = {
   auth: {
     /**
      * A navigation target, not a request: the browser goes straight to the
-     * server, which owns the OAuth handshake. BASE_URL is '' in production, so
-     * this is a same-origin path that the /api rewrite forwards.
+     * backend host, which owns the OAuth handshake. This must NOT ride the
+     * Vercel /api rewrite — the proxy would set `oauthState` on the frontend
+     * host while Google sends the callback to the backend host.
      */
     googleStartUrl: (next?: string) =>
       `${BASE_URL}/api/auth/oauth/google${next ? `?next=${encodeURIComponent(next)}` : ''}`,

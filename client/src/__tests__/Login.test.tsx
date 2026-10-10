@@ -39,8 +39,9 @@ function renderLogin(overrides: Partial<AuthContextValue> = {}, search = '') {
 
 describe('Login', () => {
   // The href is asserted with a regex, never an exact string: BASE_URL is
-  // 'http://localhost:3001' under vitest (import.meta.env.DEV) and '' in the
-  // production bundle, so only the path is a stable contract.
+  // 'http://localhost:3001' under vitest (import.meta.env.DEV) and the branded
+  // backend origin in the production bundle, so only the path is a stable
+  // contract.
   // The name is asserted exactly: the official Google G is aria-hidden, so the
   // accessible name must be precisely "Continue with Google" and nothing else.
   it('offers exactly one Google link pointing at the OAuth start route', () => {
