@@ -109,4 +109,16 @@ describe('productionProblems', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('localhost:5173');
   });
+
+  it('rejects a callback on a different host than the app (the state_mismatch bug)', () => {
+    // The live misconfiguration: app on Vercel, callback pinned to the Render
+    // API host. The host-only oauthState cookie never crosses over.
+    const problems = productionProblems({
+      ...validProd,
+      OAUTH_CALLBACK_URL: 'https://quizora-ppfp.onrender.com/api/auth/oauth/google/callback'
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain('quizora-ppfp.onrender.com');
+    expect(problems[0]).toContain('quizora-rho.vercel.app');
+  });
 });
