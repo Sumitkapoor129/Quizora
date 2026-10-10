@@ -21,7 +21,7 @@
 - **TDD:** every new behaviour gets a test that is written, run, and watched fail for the right reason before the code is written. Pure refactors (Task 1's extraction) are guarded by the existing suite, which must stay green.
 - **Never leak secrets to the browser:** no Google error string, no client secret, no token ever reaches a response body. Callback failures log the reason server-side and redirect to `/login?oauth=error`.
 - **`CLIENT_ORIGINS[0]` is the app origin.** The post-sign-in redirect target is `env.CLIENT_ORIGINS[0]`, never `new URL(OAUTH_CALLBACK_URL).origin` (that is the server, which 404s in development).
-- **Tasks 4 and 5 are one deploy unit.** Task 4 removes the last way to sign in; Task 5 restores it. Never deploy between them.
+- **Tasks 1–5 are one deploy unit.** Task 1 makes four unset env vars fatal in production, and Task 4 removes the last way to sign in; Task 5 restores it. **Never deploy this branch before Task 5 is merged** — at any point from Task 1 onward, a Render deploy without the four new env vars is an immediate crash loop, and a deploy at Task 4 leaves nobody able to sign in. Tasks 6 (client) and 7 (verification) are independently deployable afterwards.
 - **Verification gates per task:** `cd server && npm run typecheck` and `cd client && npm run typecheck` where the task touches that side.
 
 ---
@@ -88,7 +88,7 @@ Add four entries to `envSchema` (after the `CLIENT_ORIGIN` entry, keeping `SMTP_
   // production fail-fast below is what guarantees they are set where it counts.
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
-  OAUTH_CALLBACK_URL: z.string().url().optional(),
+  OAUTH_CALLBACK_URL: z.string().url().refine((u) => u.startsWith('http'), 'Must be an http(s) URL.').optional(),
   // Comma-separated emails that resolve to role ADMIN on every Google sign-in.
   ADMIN_EMAILS: z.string().default(''),
 ```
@@ -280,10 +280,26 @@ Ten server test files reference `POST /api/auth/login` today: seven authenticate
 - [ ] **Step 1: Create `server/tests/helpers/auth.ts`**
 
 ```ts
-import { createHash, randomBytes } from 'node:crypto';
-import { RefreshSession } from '../../src/models/RefreshSession.js';
-import { User } from '../../src/models/User.js';
-import { REFRESH_TTL_MS, signAccessToken } from '../../src/services/session.js';
+import { randomBytes } from 'node:crypto';
+import argon2 from 'argon2';
+
+// The `src` imports below are deliberately dynamic. Test files assign
+// process.env.UPLOAD_DIR in beforeAll and then import src on purpose; a static
+// import here would evaluate config/env.ts (via services/session.ts) before that
+// assignment and freeze UPLOAD_DIR at its 'uploads' default.
+
+/**
+ * Seeded users still get a real password hash: the User schema requires one
+ * until Task 4, and student-portal's password tests verify it. Temporary —
+ * Task 4 deletes this, argon2 and the tests that need it.
+ */
+export const TEST_PASSWORD = 'password123';
+
+let passwordHash: string | undefined;
+/** argon2 is deliberately slow, so hash once per test file and reuse it. */
+async function testPasswordHash(): Promise<string> {
+  return (passwordHash ??= await argon2.hash(TEST_PASSWORD, { type: argon2.argon2id }));
+}
 
 export interface SeededUser {
   id: string;
@@ -307,11 +323,13 @@ function uniqueEmail(): string {
 }
 
 export async function seedUser(opts: SeedOptions = {}): Promise<SeededUser> {
+  const { User } = await import('../../src/models/User.js');
   const email = opts.email ?? uniqueEmail();
   const user = await User.create({
     email,
     name: opts.name ?? 'Test User',
-    role: opts.role ?? 'STUDENT'
+    role: opts.role ?? 'STUDENT',
+    passwordHash: await testPasswordHash()
   });
   return { id: String(user._id), email, name: user.name, role: user.role };
 }
@@ -330,15 +348,12 @@ export interface TestSession extends SeededUser {
  * RefreshSession, so a cookie without one is not an authenticated user.
  */
 export async function createTestSession(opts: SeedOptions = {}): Promise<TestSession> {
+  const { RefreshSession } = await import('../../src/models/RefreshSession.js');
+  const { REFRESH_TTL_MS, newRefreshToken, signAccessToken } = await import('../../src/services/session.js');
   const user = await seedUser(opts);
-  const raw = randomBytes(48).toString('base64url');
+  const { raw, hash } = newRefreshToken();
   const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
-  await RefreshSession.create({
-    userId: user.id,
-    tokenHash: createHash('sha256').update(raw).digest('hex'),
-    expiresAt,
-    revokedAt: null
-  });
+  await RefreshSession.create({ userId: user.id, tokenHash: hash, expiresAt, revokedAt: null });
   const accessToken = signAccessToken({
     _id: user.id,
     email: user.email,
@@ -354,26 +369,48 @@ export async function createTestSession(opts: SeedOptions = {}): Promise<TestSes
 }
 ```
 
+Use `newRefreshToken()` from the service — never re-derive the sha256 token hash
+here. This file is the single source of truth for test session setup, so a
+divergent copy of the server's crypto would fail somewhere far from its cause.
+
 - [ ] **Step 2: Migrate one test file and prove the helper works**
 
-Take `server/tests/resources.test.ts` as the pilot. It currently has a local login helper of this shape:
+Take `server/tests/resources.test.ts` as the pilot. Its local helper is named
+`seedUser` — which would collide with the imported `seedUser`, so it must be
+deleted, not kept:
 
 ```ts
-async function loginAsAdmin() { /* POST /api/auth/login with email+password, then scrape accessToken */ }
+  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<{ id: string; cookie: string }> {
+    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
+    await User.create({ email, name, passwordHash, role });
+    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
+    return { id: String(login.body.user.id), cookie: cookiePair(login, 'accessToken')! };
+  }
 ```
 
-Replace it with:
+Delete it, plus the local `cookiePair`, the `PASSWORD` constant and the `argon2`
+import, and add `import { createTestSession } from './helpers/auth.js';`. Then
+rewrite the `beforeAll` seeding, keeping the module-level variables the test
+bodies read:
 
 ```ts
-import { createTestSession } from './helpers/auth.js';
-
-async function loginAsAdmin() {
-  const session = await createTestSession({ role: 'ADMIN' });
-  return { id: session.id, cookie: session.accessCookie };
-}
+  const admin = await createTestSession({ role: 'ADMIN' });
+  adminCookie = admin.accessCookie;
+  adminId = admin.id;
+  const s1 = await createTestSession({ role: 'STUDENT' });
+  studentCookie = s1.accessCookie;
 ```
 
-Delete the local `cookiePair` helper and the seeded-password constants it needed. Keep every test body and assertion unchanged.
+**Two rules for every migrated file:**
+
+- **Pass an explicit `email` wherever a test asserts on it.** The helper generates
+  a unique email per call, so `createTestSession()` with no `email` changes what
+  an assertion sees. Wherever the old code passed a literal address that a test
+  body or response assertion refers to, pass it through:
+  `createTestSession({ role: 'STUDENT', email: 's2@example.com', name: 'Student Two' })`.
+- **Keep every test body and assertion byte-identical.** This task changes
+  authentication plumbing only. If a test body needs editing to accommodate the
+  helper, that is a signal the helper is wrong, not the test.
 
 - [ ] **Step 3: Run that file's tests**
 
@@ -382,7 +419,9 @@ Expected: PASS (10 tests), unchanged count.
 
 - [ ] **Step 4: Migrate the remaining files the same way**
 
-For each of `admin-attempts.test.ts`, `import-admin.test.ts`, `student-exam.test.ts`, `student-portal.test.ts`, `tests-admin.test.ts`, `admin-analytics.test.ts`: delete its local login + `cookiePair` helper and its `argon2.hash` seeding, import `createTestSession` from `./helpers/auth.js`, and keep every test body identical. `admin-analytics.test.ts` scrapes cookies with a different expression — it becomes `session.accessCookie` too. `health.test.ts` only asserts a 401 shape and does not authenticate; leave it alone unless it imports a deleted helper.
+For each of `admin-attempts.test.ts`, `import-admin.test.ts`, `student-exam.test.ts`, `student-portal.test.ts`, `tests-admin.test.ts`, `admin-analytics.test.ts`: delete its local `seedUser` + `cookiePair` helper (all six have the same shape as the pilot), its `PASSWORD` constant and its `argon2` import; import `createTestSession` from `./helpers/auth.js`; rewrite the `beforeAll` seeding. `admin-analytics.test.ts` has no `cookiePair` — it scrapes `login.headers['set-cookie']` inline at line 75; it becomes `session.accessCookie` like the rest. `health.test.ts` only asserts a 401 shape and does not authenticate; leave it alone.
+
+`student-portal.test.ts` is the exception that still mentions `/api/auth/login` after this task: its three password-change tests log in with the new and old password (lines 233-240). Task 4 deletes those tests, so leave them exactly as they are.
 
 - [ ] **Step 5: Run the full server suite and typecheck**
 
@@ -395,7 +434,7 @@ Expected: exit 0.
 - [ ] **Step 6: Confirm no test file still calls the login route for authentication**
 
 Run: `cd server && rg -n "auth/login" tests/`
-Expected: matches only inside `auth.test.ts`, `auth-otp.test.ts` and `auth-password-reset.test.ts` — the three files that are about login itself, handled in Task 4 — plus any comment. If a migrated file still matches, fix it now.
+Expected: matches only in `auth.test.ts`, `auth-otp.test.ts`, `auth-password-reset.test.ts` (the three files that are about login itself, rewritten or deleted in Task 4) and `student-portal.test.ts` (its password-change tests, deleted in Task 4), plus any comment. If any OTHER file still matches, its `seedUser` migration was incomplete — fix it now.
 
 - [ ] **Step 7: Commit**
 
@@ -514,6 +553,28 @@ import { env } from '../config/env.js';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
+const TIMEOUT_MS = 10_000;
+
+/**
+ * One place that turns a transport, status or decode failure into
+ * `<reason>:<detail>`. Callers match on the `google_*_failed` prefix, and a
+ * hung or unparseable Google response must not escape as a raw fetch/JSON
+ * error or hang the sign-in request.
+ */
+async function googleJson(reason: string, url: string, init?: RequestInit): Promise<unknown> {
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+  } catch {
+    throw new Error(`${reason}:unreachable`);
+  }
+  if (!res.ok) throw new Error(`${reason}:${res.status}`);
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`${reason}:invalid_json`);
+  }
+}
 
 export interface GoogleProfile {
   sub: string;
@@ -533,7 +594,7 @@ export function buildAuthUrl(opts: { state: string }): string {
 }
 
 export async function exchangeCode(code: string): Promise<string> {
-  const res = await fetch(TOKEN_URL, {
+  const body = (await googleJson('google_token_exchange_failed', TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -543,26 +604,37 @@ export async function exchangeCode(code: string): Promise<string> {
       client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
       redirect_uri: env.OAUTH_CALLBACK_URL
     })
-  });
-  if (!res.ok) throw new Error(`google_token_exchange_failed:${res.status}`);
-  const body = (await res.json()) as { access_token?: string };
+  })) as { access_token?: string };
   if (!body.access_token) throw new Error('google_token_exchange_failed:no_access_token');
   return body.access_token;
 }
 
 export async function fetchProfile(accessToken: string): Promise<GoogleProfile> {
-  const res = await fetch(USERINFO_URL, {
+  const profile = (await googleJson('google_profile_failed', USERINFO_URL, {
     headers: { Authorization: `Bearer ${accessToken}` }
-  });
-  if (!res.ok) throw new Error(`google_profile_failed:${res.status}`);
-  return (await res.json()) as GoogleProfile;
+  })) as Partial<GoogleProfile>;
+  if (!profile.sub || !profile.email) throw new Error('google_profile_failed:invalid_payload');
+  return profile as GoogleProfile;
 }
 ```
+
+Every throw carries a `google_*_failed` prefix — `<status>`, `:no_access_token`,
+`:invalid_payload`, `:invalid_json` or `:unreachable`. Task 5 relies on that prefix
+and nothing else: a raw `TypeError` or `SyntaxError` must never reach the route.
+`GoogleProfile.sub`/`.email` are non-optional because Google guarantees them, so
+the service enforces it rather than leaving a dead-code-looking check in the route.
 
 - [ ] **Step 4: Run it and watch it pass**
 
 Run: `cd server && npx vitest run tests/google-oauth.test.ts`
 Expected: PASS (7 tests).
+
+Four further tests earn their keep, and the reviewer proved the first two are not
+optional: assert `/google_token_exchange_failed:400/` (a loose prefix regex passes
+even with the `!res.ok` branch deleted, because a 400 body has no `access_token`
+and the `no_access_token` path throws the same prefix), assert the exchange
+sends `Content-Type: application/x-www-form-urlencoded`, and cover the
+`invalid_json`, `unreachable` and `invalid_payload` paths above. Total 11.
 
 - [ ] **Step 5: Commit**
 
@@ -570,6 +642,8 @@ Expected: PASS (7 tests).
 git add server/src/services/googleOAuth.ts server/tests/google-oauth.test.ts
 git commit -m "feat(server): Google OAuth protocol service over fetch, with no new dependency"
 ```
+
+Suite after this task: 154 + 11 = **165 passed**, 14 files.
 
 ---
 
@@ -579,7 +653,7 @@ Removes password login, the OTP model, the mailer and their config. **After this
 
 **Files:**
 - Delete: `server/src/models/EmailOtp.ts`, `server/src/services/mailer.ts`, `server/tests/auth-otp.test.ts`, `server/tests/auth-password-reset.test.ts`
-- Modify: `server/src/models/User.ts`, `server/src/routes/auth.ts`, `server/src/routes/student.ts`, `server/src/config/env.ts`, `server/vitest.config.ts`, `.env.example`, `server/package.json`, `server/tests/auth.test.ts`, `server/tests/db-harness.test.ts`, `server/tests/student-portal.test.ts`
+- Modify: `server/src/models/User.ts`, `server/src/routes/auth.ts`, `server/src/routes/student.ts`, `server/src/config/env.ts`, `server/vitest.config.ts`, `.env.example`, `server/package.json`, `server/README.md`, `server/tests/auth.test.ts`, `server/tests/db-harness.test.ts`, `server/tests/student-portal.test.ts`, **`server/tests/helpers/auth.ts`**
 
 **Interfaces:**
 - Consumes: `services/session.ts` and `seedUser`/`createTestSession` (Tasks 1-2)
@@ -661,9 +735,10 @@ In `server/src/routes/auth.ts` delete: the five route blocks `POST /register` (l
 Then fix the imports. After the deletions and the Task 1 move, the surviving set is exactly:
 
 - **remove:** `argon2`, `EmailOtp`/`EmailOtpPurpose`, `sendMail`, `randomInt`, `timingSafeEqual`, `createHash`, `jwt`, `z`
-- **keep:** `randomBytes` (Task 5 mints `state` from it), `Router`/`CookieOptions`/`NextFunction`/`Request`/`Response`, `rateLimit` (only `refreshLimiter` is left), `env`, `AppError`, `authenticate`, `RefreshSession`, `User`
+- **keep:** `Router`/`NextFunction`/`Request`/`Response`, `rateLimit` (only `refreshLimiter` is left), `env`, `AppError`, `authenticate`, `RefreshSession`, `User`
+- **also remove the whole `node:crypto` import:** `randomBytes` was only used by the OTP helpers, so unlike `randomInt`/`timingSafeEqual` it is not present here to begin with. Task 5 re-adds it when it starts minting `state` from it — along with `type CookieOptions` and `issueSession`, which Task 4 likewise leaves out rather than parking unused imports for a later commit.
 
-`jwt` and `createHash` are not "probably" unused: they were only ever used by `signAccessToken`/`hashToken`, both of which Task 1 moved out. Leaving either import behind fails `npm run typecheck` on `noUnusedLocals`. `REPLAY_REVOKE_GRACE_MS` stays — `/refresh` still uses it.
+`jwt` and `createHash` are not "probably" unused: they were only ever used by `signAccessToken`/`hashToken`, both of which Task 1 moved out. Nothing catches a leftover import here — `noUnusedLocals` is not enabled in `server/tsconfig.json` — so the `rg` sweep in Step 8 is the only guard. `REPLAY_REVOKE_GRACE_MS` stays — `/refresh` still uses it.
 
 Keep `isDuplicateKey` — Task 5 reuses it for the sign-in race.
 
@@ -679,7 +754,9 @@ const profileSchema = z.object({
 });
 ```
 
-(keep whatever length bound the current `name` field already uses — match it, do not invent one), delete the `superRefine` that required `currentPassword` for `newPassword`, and reduce the handler to: load the user, apply `name` when present, save, then respond with the existing session DTO. Import `authBody` from `../services/session.js` instead of rebuilding the object inline at lines 788-791, and look up the live session for the expiry exactly as the old code did.
+(keep whatever length bound the current `name` field already uses — match it, do not invent one), delete the `currentPassword`/`newPassword` fields and the branch of the `superRefine` that required one for the other, and reduce the handler to: load the user, apply `name` when present, save, then respond with the existing session DTO. Import `authBody` from `../services/session.js` instead of rebuilding the object inline at lines 788-791, and look up the live session for the expiry exactly as the old code did.
+
+Keep the `superRefine`'s remaining guard — a body with no `name` is still `400 VALIDATION_ERROR` on `name` with `'Provide a name.'`. A `{}` (or a stale client sending only the old password fields) must not get a 200 that changed nothing. This is a deliberate deviation from the literal snippet above, pinned by a test.
 
 - [ ] **Step 6: Remove the dead config keys**
 
@@ -701,6 +778,8 @@ ADMIN_EMAILS=
 ```
 
 - [ ] **Step 7: Remove the dependencies**
+
+**First, strip the temporary argon2 seeding from `server/tests/helpers/auth.ts`** — it exists only because the `User` schema still required `passwordHash`. Delete the `argon2` import, `TEST_PASSWORD`, `passwordHash`, `testPasswordHash()` and the `passwordHash:` field in `seedUser`'s `User.create`. Then `student-portal.test.ts` loses its `PASSWORD` constant and its `import { TEST_PASSWORD }` line along with the three password tests. Doing this before `npm install` is what keeps the suite runnable.
 
 `server/package.json`: remove `"argon2"` and `"nodemailer"` from `dependencies` and `"@types/nodemailer"` from `devDependencies`. Run `cd server && npm install` to update `package-lock.json`.
 
@@ -877,6 +956,12 @@ Add near the top of the file, after the imports:
 ```ts
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
+// ponytail: the two OAuth routes get no rate limiter, unlike /refresh. A
+// start→callback loop costs one outbound call to Google's token endpoint, which
+// Google already rate-limits, and a per-IP ceiling here would lock out a cohort
+// signing in together from one campus NAT — the normal case for this product.
+// Add one if the log noise or egress ever matters.
+
 // Scoped to the OAuth routes, and SameSite=Lax so the cookie still arrives on
 // the callback: that request is a top-level cross-site GET navigation from
 // accounts.google.com, which Lax permits (and Strict would not).
@@ -901,7 +986,7 @@ function safeNext(raw: unknown): string {
   if (typeof raw !== 'string' || raw === '') return '/';
   if (!raw.startsWith('/')) return '/';
   if (raw.startsWith('//')) return '/';
-  if (raw.includes('\\')) return '/';
+  if (/[\\\s\u0000-\u001f\u007f]/.test(raw)) return '/';
   return raw;
 }
 
@@ -926,6 +1011,9 @@ function failOauth(res: Response, reason: string): void {
 async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'ADMIN' | 'STUDENT') {
   const existing = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
   if (existing) {
+    // A reassigned email must NOT be re-pointed: that hands the previous
+    // holder's attempts and results to the newcomer. Fail closed instead.
+    if (existing.googleId && existing.googleId !== profile.sub) return null;
     existing.googleId = profile.sub;
     existing.role = role;
     await existing.save();
@@ -942,13 +1030,13 @@ async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'AD
     if (!isDuplicateKey(err)) throw err;
     // Two tabs finished signing in at once; the loser adopts the winner's row.
     const winner = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
-    if (!winner) throw err;
+    if (!winner || (winner.googleId && winner.googleId !== profile.sub)) throw err;
     return winner;
   }
 }
 ```
 
-Add the imports `buildAuthUrl, exchangeCode, fetchProfile, type GoogleProfile` from `../services/googleOAuth.js` and `randomBytes` from `node:crypto`.
+Add the imports `buildAuthUrl, exchangeCode, fetchProfile, type GoogleProfile` from `../services/googleOAuth.js`, `randomBytes` from `node:crypto`, `type CookieOptions` from `express` (for `oauthCookieBase`) and `issueSession` from `../services/session.js`. Task 4 deliberately left all four out of `auth.ts` rather than park unused imports; `isDuplicateKey` (`auth.ts:22`) is likewise kept-but-unreferenced by Task 4 and is consumed by the callback below — if it is still unused when this task is done, something was missed.
 
 Then register the routes above the `/refresh` handler:
 
@@ -987,11 +1075,12 @@ authRouter.get(
     }
 
     const email = typeof profile.email === 'string' ? profile.email.trim().toLowerCase() : '';
-    if (!email || profile.email_verified === false) return failOauth(res, 'email_unverified');
+    if (!email || profile.email_verified !== true) return failOauth(res, 'email_unverified');
 
     const next = safeNext(req.cookies?.oauthNext);
     const role = env.ADMIN_EMAIL_SET.has(email) ? 'ADMIN' : 'STUDENT';
     const user = await upsertGoogleUser(profile, email, role);
+    if (!user) return failOauth(res, 'link_conflict');
 
     await issueSession(user, res);
     res.redirect(302, `${appOrigin()}${next}`);
@@ -1002,7 +1091,7 @@ authRouter.get(
 - [ ] **Step 5: Run the OAuth tests and watch them pass**
 
 Run: `cd server && npx vitest run tests/oauth.test.ts`
-Expected: PASS (12 tests).
+Expected: PASS (12 tests). Full suite: 143 + 12 = **155 / 13 files**.
 
 - [ ] **Step 6: Run the full server suite and typecheck**
 

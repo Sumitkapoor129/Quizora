@@ -1,135 +1,31 @@
-import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
-import argon2 from 'argon2';
+import { randomBytes } from 'node:crypto';
 import { Router, type CookieOptions, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import jwt from 'jsonwebtoken';
-import { z } from 'zod';
 import { env } from '../config/env.js';
 import { AppError } from '../errors.js';
 import { authenticate } from '../middleware/auth.js';
-import { EmailOtp, type EmailOtpPurpose } from '../models/EmailOtp.js';
 import { RefreshSession } from '../models/RefreshSession.js';
 import { User } from '../models/User.js';
-import { sendMail } from '../services/mailer.js';
+import {
+  buildAuthUrl,
+  exchangeCode,
+  fetchProfile,
+  type GoogleProfile
+} from '../services/googleOAuth.js';
+import {
+  REFRESH_TTL_MS,
+  authBody,
+  clearAuthCookies,
+  hashToken,
+  issueSession,
+  newRefreshToken,
+  setAuthCookies,
+  signAccessToken
+} from '../services/session.js';
 
-const ACCESS_TTL_MS = 15 * 60 * 1000;
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // Replays of a just-rotated token within this window are usually two tabs
 // sharing the cookie racing on refresh, not theft. Old replays still revoke.
 const REPLAY_REVOKE_GRACE_MS = 10_000;
-
-const NAME_REQUIRED = 'Name is required.';
-const EMAIL_REQUIRED = 'Email is required.';
-const EMAIL_INVALID = 'Enter a valid email address.';
-const PASSWORD_INVALID = 'Password must be at least 8 characters.';
-const CODE_INVALID = 'Enter the 6-digit code.';
-const OTP_INVALID_MESSAGE = 'Invalid verification code.';
-const OTP_EXPIRED_MESSAGE = 'This code has expired. Request a new one.';
-const OTP_ATTEMPTS_MESSAGE = 'Too many failed attempts. Request a new code.';
-
-const OTP_TTL_MS = 10 * 60 * 1000;
-const OTP_ATTEMPTS = 5;
-
-const emailField = z
-  .string({ required_error: EMAIL_REQUIRED, invalid_type_error: EMAIL_REQUIRED })
-  .trim()
-  .toLowerCase()
-  .superRefine((value, ctx) => {
-    if (!value) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: EMAIL_REQUIRED });
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: EMAIL_INVALID });
-    }
-  });
-
-const registerSchema = z.object({
-  name: z
-    .string({ required_error: NAME_REQUIRED, invalid_type_error: NAME_REQUIRED })
-    .trim()
-    .min(1, NAME_REQUIRED),
-  email: emailField,
-  password: z
-    .string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID })
-    .min(8, PASSWORD_INVALID)
-});
-
-const codeField = z
-  .string({ required_error: CODE_INVALID, invalid_type_error: CODE_INVALID })
-  .regex(/^\d{6}$/, CODE_INVALID);
-
-const registerVerifySchema = z.object({
-  name: registerSchema.shape.name,
-  email: emailField,
-  password: registerSchema.shape.password,
-  code: codeField
-});
-
-const forgotPasswordSchema = z.object({
-  email: emailField
-});
-
-const resetPasswordSchema = z.object({
-  email: emailField,
-  code: codeField,
-  newPassword: z
-    .string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID })
-    .min(8, PASSWORD_INVALID)
-});
-
-const loginSchema = z.object({
-  email: emailField,
-  password: z.string({ required_error: PASSWORD_INVALID, invalid_type_error: PASSWORD_INVALID }).min(1, PASSWORD_INVALID)
-});
-
-type AuthUserRecord = { _id: unknown; email: string; name: string; role: string };
-
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
-function newRefreshToken(): { raw: string; hash: string } {
-  const raw = randomBytes(48).toString('base64url');
-  return { raw, hash: hashToken(raw) };
-}
-
-// Verify against a constant hash on unknown email so login response time does
-// not reveal whether an account exists (no user enumeration).
-let dummyHashPromise: Promise<string> | undefined;
-function getDummyHash(): Promise<string> {
-  return (dummyHashPromise ??= argon2.hash('exampro-timing-equalizer', { type: argon2.argon2id }));
-}
-
-function signAccessToken(user: AuthUserRecord): string {
-  return jwt.sign(
-    { id: String(user._id), email: user.email, role: user.role, type: 'access' },
-    env.JWT_ACCESS_SECRET,
-    { algorithm: 'HS256', expiresIn: ACCESS_TTL_MS / 1000 }
-  );
-}
-
-const cookieBase: CookieOptions = {
-  httpOnly: true,
-  secure: env.COOKIE_SECURE,
-  sameSite: env.COOKIE_SECURE ? 'none' : 'lax',
-  path: '/'
-};
-
-function setAuthCookies(res: Response, accessToken: string, refreshToken: string, refreshExpiresAt: Date): void {
-  res.cookie('accessToken', accessToken, { ...cookieBase, maxAge: ACCESS_TTL_MS });
-  res.cookie('refreshToken', refreshToken, { ...cookieBase, expires: refreshExpiresAt });
-}
-
-function clearAuthCookies(res: Response): void {
-  res.clearCookie('accessToken', cookieBase);
-  res.clearCookie('refreshToken', cookieBase);
-}
-
-function authBody(user: AuthUserRecord, sessionExpiresAt: Date): object {
-  return {
-    user: { id: String(user._id), email: user.email, name: user.name, role: user.role },
-    sessionExpiresAt: sessionExpiresAt.toISOString()
-  };
-}
 
 function isDuplicateKey(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000;
@@ -156,183 +52,155 @@ const limiterOptions = {
   skip: () => env.NODE_ENV === 'test'
 };
 
-// One limiter instance per route: sharing an instance would pool their budgets.
-// Sends are throttled harder than verifies: a 6-digit code has a ~1e6 keyspace
-// and send is the only client-controlled way to mint codes.
-export const OTP_SEND_LIMIT = 5;
-export const OTP_VERIFY_LIMIT = 10;
-const registerLimiter = rateLimit({ ...limiterOptions, limit: OTP_SEND_LIMIT });
-const registerVerifyLimiter = rateLimit({ ...limiterOptions, limit: OTP_VERIFY_LIMIT });
-const forgotPasswordLimiter = rateLimit({ ...limiterOptions, limit: OTP_SEND_LIMIT });
-const resetPasswordLimiter = rateLimit({ ...limiterOptions, limit: OTP_VERIFY_LIMIT });
-const loginLimiter = rateLimit({ ...limiterOptions, limit: 10 });
 const refreshLimiter = rateLimit({ ...limiterOptions, limit: 60 });
 
-// --- Email OTP helpers -----------------------------------------------------
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-function generateOtpCode(): string {
-  return String(randomInt(100000, 1000000));
+// ponytail: the two OAuth routes get no rate limiter, unlike /refresh. A
+// start→callback loop costs one outbound call to Google's token endpoint, which
+// Google already rate-limits, and a per-IP ceiling here would lock out a cohort
+// signing in together from one campus NAT — the normal case for this product.
+// Add one if the log noise or egress ever matters.
+
+// Scoped to the OAuth routes, and SameSite=Lax so the cookie still arrives on
+// the callback: that request is a top-level cross-site GET navigation from
+// accounts.google.com, which Lax permits (and Strict would not).
+const oauthCookieBase: CookieOptions = {
+  httpOnly: true,
+  secure: env.COOKIE_SECURE,
+  sameSite: 'lax',
+  path: '/api/auth/oauth'
+};
+
+/**
+ * Where the browser goes after signing in: the FIRST configured client origin.
+ * That is the app (Vercel in production, localhost:5173 in development).
+ * OAUTH_CALLBACK_URL's own origin is the *server* and would 404 in development.
+ */
+function appOrigin(): string {
+  return env.CLIENT_ORIGINS[0];
 }
 
-async function storeEmailOtp(email: string, purpose: EmailOtpPurpose, code: string): Promise<Date> {
-  const expiresAt = new Date(Date.now() + OTP_TTL_MS);
-  // Atomic upsert: a new send replaces the single active OTP for (email,
-  // purpose) in one step, so concurrent sends cannot leave two live codes
-  // (the (email, purpose) unique index backs this up).
-  await EmailOtp.findOneAndUpdate(
-    { email, purpose },
-    { $set: { codeHash: hashToken(code), expiresAt, attemptsLeft: OTP_ATTEMPTS } },
-    { upsert: true }
-  );
-  return expiresAt;
+/** Untrusted input that ends up in a redirect: same-origin paths only. */
+function safeNext(raw: unknown): string {
+  if (typeof raw !== 'string' || raw === '') return '/';
+  if (!raw.startsWith('/')) return '/';
+  if (raw.startsWith('//')) return '/';
+  // Backslash is what makes `/\evil` and `/\/evil` protocol-relative for a
+  // browser that normalises it. Control characters and spaces are not real paths.
+  if (/[\\\s\u0000-\u001f\u007f]/.test(raw)) return '/';
+  return raw;
 }
 
-async function sendOtpEmail(to: string, code: string): Promise<void> {
-  await sendMail({
-    to,
-    subject: 'Your ExamPro verification code',
-    text: `Your ExamPro verification code is ${code}. It expires in 10 minutes.`
-  });
+function clearOauthCookies(res: Response): void {
+  res.clearCookie('oauthState', oauthCookieBase);
+  res.clearCookie('oauthNext', oauthCookieBase);
 }
 
-/** Verifies a code against the active OTP for (email, purpose); consumes it on success. */
-async function verifyEmailOtp(email: string, purpose: EmailOtpPurpose, code: string): Promise<void> {
-  const otp = await EmailOtp.findOne({ email, purpose }).select('+codeHash');
-  if (!otp) throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
-  if (otp.expiresAt.getTime() < Date.now()) throw new AppError(400, 'OTP_EXPIRED', OTP_EXPIRED_MESSAGE);
+/** Log the reason server-side; never leak a Google error string to the browser. */
+function failOauth(res: Response, reason: string): void {
+  // The reason can echo a Google-supplied `error` value, so strip anything that
+  // could forge a log line or drive a terminal: Cc covers ESC (ANSI + OSC-8),
+  // Cf covers bidi overrides, and Zl/Zp are line terminators to log shippers.
+  const safe = reason.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').slice(0, 200);
+  console.warn(`[oauth] sign-in failed: ${safe}`);
+  res.redirect(302, `${appOrigin()}/login?oauth=error`);
+}
 
-  const expected = Buffer.from(otp.codeHash, 'hex');
-  const actual = Buffer.from(hashToken(code), 'hex');
-  if (!timingSafeEqual(expected, actual)) {
-    // Atomic check-and-decrement: only guesses arriving while attemptsLeft > 0
-    // consume a guess, so parallel wrong guesses cannot pierce the cap and the
-    // counter can never go negative. A no-op means the code is already spent.
-    const res = await EmailOtp.updateOne(
-      { _id: otp._id, attemptsLeft: { $gt: 0 } },
-      { $inc: { attemptsLeft: -1 } }
-    );
-    if (res.modifiedCount === 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
-    throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
+/**
+ * Find or create the account for a Google profile. A pre-OAuth account is
+ * linked by email so the student's identity, attempts and results survive. The
+ * role is re-evaluated from ADMIN_EMAILS on every sign-in (removing an address
+ * from the list revokes admin); the display name is only ever set at creation,
+ * so a name the student edited in their profile is not overwritten.
+ *
+ * Returns null when the matching email already belongs to a *different* Google
+ * identity. That happens when an institutional address is reassigned (recycled
+ * domain, lapsed Workspace seat); re-pointing googleId would silently hand the
+ * previous holder's attempts and results to the newcomer. Failing closed costs
+ * a support request and is recoverable by clearing googleId on the row.
+ * ponytail: recovery is manual (clear `googleId`, let them relink). Add an
+ * admin-only "reclaim this address" flow if that becomes a real support load.
+ */
+async function upsertGoogleUser(profile: GoogleProfile, email: string, role: 'ADMIN' | 'STUDENT') {
+  const existing = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
+  if (existing) {
+    if (existing.googleId && existing.googleId !== profile.sub) return null;
+    existing.googleId = profile.sub;
+    existing.role = role;
+    try {
+      await existing.save();
+    } catch (err) {
+      // Same race as the create below: another tab linked this googleId first.
+      // Fail with the normal error redirect rather than a raw 500.
+      if (!isDuplicateKey(err)) throw err;
+      return null;
+    }
+    return existing;
   }
-
-  // An exhausted code is dead even when the digits match.
-  if (otp.attemptsLeft <= 0) throw new AppError(400, 'OTP_ATTEMPTS_EXCEEDED', OTP_ATTEMPTS_MESSAGE);
-
-  // One-time use: a replayed code then fails as OTP_INVALID.
-  await otp.deleteOne();
-}
-
-async function issueSession(user: AuthUserRecord): Promise<{ raw: string; expiresAt: Date }> {
-  const { raw, hash } = newRefreshToken();
-  const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
-  await RefreshSession.create({ userId: user._id, tokenHash: hash, expiresAt, revokedAt: null });
-  return { raw, expiresAt };
+  try {
+    return await User.create({
+      googleId: profile.sub,
+      email,
+      name: profile.name?.trim() || email.split('@')[0],
+      role
+    });
+  } catch (err) {
+    if (!isDuplicateKey(err)) throw err;
+    // Two tabs finished signing in at once; the loser adopts the winner's row.
+    const winner = (await User.findOne({ googleId: profile.sub })) ?? (await User.findOne({ email }));
+    if (!winner || (winner.googleId && winner.googleId !== profile.sub)) throw err;
+    return winner;
+  }
 }
 
 export const authRouter = Router();
 
-authRouter.post(
-  '/register',
-  registerLimiter,
+authRouter.get(
+  '/oauth/google',
   asyncHandler(async (req, res) => {
-    const { name, email, password } = registerSchema.parse(req.body);
-
-    // Step 1 of two: only the OTP is sent here. No account is created and no
-    // session is issued until the code verifies at /register/verify.
-    if (await User.exists({ email })) {
-      throw new AppError(409, 'EMAIL_TAKEN', 'An account with this email already exists.');
-    }
-
-    const code = generateOtpCode();
-    // Store before sending: an email that arrives must always be verifiable.
-    const otpExpiresAt = await storeEmailOtp(email, 'REGISTER', code);
-    await sendOtpEmail(email, code);
-    res.status(201).json({ email, otpExpiresAt: otpExpiresAt.toISOString() });
+    const state = randomBytes(32).toString('base64url');
+    const next = safeNext(req.query.next);
+    res.cookie('oauthState', state, { ...oauthCookieBase, maxAge: OAUTH_STATE_TTL_MS });
+    res.cookie('oauthNext', next, { ...oauthCookieBase, maxAge: OAUTH_STATE_TTL_MS });
+    res.redirect(302, buildAuthUrl({ state }));
   })
 );
 
-authRouter.post(
-  '/register/verify',
-  registerVerifyLimiter,
+authRouter.get(
+  '/oauth/google/callback',
   asyncHandler(async (req, res) => {
-    const { name, email, password, code } = registerVerifySchema.parse(req.body);
-    await verifyEmailOtp(email, 'REGISTER', code);
+    // Clear first: every exit path below has consumed both cookies.
+    clearOauthCookies(res);
 
-    const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
-    let user;
+    const expected = req.cookies?.oauthState;
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    if (!expected || !state || expected !== state) return failOauth(res, 'state_mismatch');
+
+    if (req.query.error) return failOauth(res, `google_error:${String(req.query.error)}`);
+
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    if (!code) return failOauth(res, 'missing_code');
+
+    let profile: GoogleProfile;
     try {
-      // Role is always STUDENT on self-registration; never trust a client role.
-      user = await User.create({ name, email, passwordHash, role: 'STUDENT' });
+      profile = await fetchProfile(await exchangeCode(code));
     } catch (err) {
-      if (isDuplicateKey(err)) {
-        throw new AppError(409, 'EMAIL_TAKEN', 'An account with this email already exists.');
-      }
-      throw err;
+      return failOauth(res, err instanceof Error ? err.message : 'google_exchange_failed');
     }
 
-    const session = await issueSession(user);
-    setAuthCookies(res, signAccessToken(user), session.raw, session.expiresAt);
-    res.status(201).json(authBody(user, session.expiresAt));
-  })
-);
+    const email = typeof profile.email === 'string' ? profile.email.trim().toLowerCase() : '';
+    // `!== true` rather than `=== false`: an absent flag, or a profile that sends
+    // the string "false", is not a verified email and must not sign anyone in.
+    if (!email || profile.email_verified !== true) return failOauth(res, 'email_unverified');
 
-authRouter.post(
-  '/forgot-password',
-  forgotPasswordLimiter,
-  asyncHandler(async (req, res) => {
-    const { email } = forgotPasswordSchema.parse(req.body);
+    const next = safeNext(req.cookies?.oauthNext);
+    const role = env.ADMIN_EMAIL_SET.has(email) ? 'ADMIN' : 'STUDENT';
+    const user = await upsertGoogleUser(profile, email, role);
+    if (!user) return failOauth(res, 'link_conflict');
 
-    // Uniform machinery for every email, known or unknown: same response shape
-    // AND the same server work (DB write + SMTP round-trip), so an attacker
-    // cannot tell accounts apart by response shape or wall-clock timing. The
-    // OTP stored for an unknown email is inert (reset-password still refuses
-    // to verify a missing account) and expires via the TTL index in 10 minutes.
-    const code = generateOtpCode();
-    const otpExpiresAt = await storeEmailOtp(email, 'PASSWORD_RESET', code);
-    await sendOtpEmail(email, code);
-    res.json({ email, otpExpiresAt: otpExpiresAt.toISOString() });
-  })
-);
-
-authRouter.post(
-  '/reset-password',
-  resetPasswordLimiter,
-  asyncHandler(async (req, res) => {
-    const { email, code, newPassword } = resetPasswordSchema.parse(req.body);
-    await verifyEmailOtp(email, 'PASSWORD_RESET', code);
-
-    const user = await User.findOne({ email });
-    if (!user) {
-      // OTP existed but the account is gone — behave exactly like a bad code.
-      throw new AppError(400, 'OTP_INVALID', OTP_INVALID_MESSAGE);
-    }
-
-    const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
-    await user.updateOne({ $set: { passwordHash } });
-
-    // A reset revokes every established session on the account.
-    await RefreshSession.updateMany({ userId: user._id, revokedAt: null }, { $set: { revokedAt: new Date() } });
-    clearAuthCookies(res);
-    res.status(204).end();
-  })
-);
-
-authRouter.post(
-  '/login',
-  loginLimiter,
-  asyncHandler(async (req, res) => {
-    const { email, password } = loginSchema.parse(req.body);
-    const user = await User.findOne({ email }).select('+passwordHash');
-    const ok = user
-      ? await argon2.verify(user.passwordHash, password).catch(() => false)
-      : await argon2.verify(await getDummyHash(), password).catch(() => false);
-    if (!user || !ok) {
-      throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid email or password.');
-    }
-
-    const session = await issueSession(user);
-    setAuthCookies(res, signAccessToken(user), session.raw, session.expiresAt);
-    res.json(authBody(user, session.expiresAt));
+    await issueSession(user, res);
+    res.redirect(302, `${appOrigin()}${next}`);
   })
 );
 

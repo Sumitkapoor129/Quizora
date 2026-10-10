@@ -17,23 +17,21 @@ afterAll(async () => {
 });
 
 describe('mongodb via mongodb-memory-server', () => {
-  it('creates a user', async () => {
-    const user = await User.create({
-      email: 'alice@example.com',
-      name: 'Alice',
-      passwordHash: 'not-a-real-hash'
-    });
-    expect(user.email).toBe('alice@example.com');
-    expect(user.name).toBe('Alice');
+  // Both unique indexes are load-bearing: the callback catches 11000 on insert
+  // to adopt the winning row, so a missing index would turn a race into a 500.
+  it('creates a user without a password and rejects a duplicate googleId', async () => {
+    const user = await User.create({ email: 'nopass@example.com', name: 'No Pass', googleId: 'sub-1' });
     expect(user.role).toBe('STUDENT');
-    expect(user.passwordHash).toBe('not-a-real-hash');
+    expect(user.googleId).toBe('sub-1');
+    await expect(
+      User.create({ email: 'other@example.com', name: 'Other', googleId: 'sub-1' })
+    ).rejects.toMatchObject({ code: 11000 });
   });
 
-  it('rejects a duplicate unique email with the duplicate-key error', async () => {
-    const email = 'dup@example.com';
-    await User.create({ email, name: 'One', passwordHash: 'x' });
-    await expect(User.create({ email, name: 'Two', passwordHash: 'y' })).rejects.toMatchObject({
-      code: 11000
-    });
+  it('rejects a duplicate email, which is how a concurrent first sign-in is detected', async () => {
+    await User.create({ email: 'taken@example.com', name: 'First', googleId: 'sub-email-1' });
+    await expect(
+      User.create({ email: 'taken@example.com', name: 'Second', googleId: 'sub-email-2' })
+    ).rejects.toMatchObject({ code: 11000 });
   });
 });

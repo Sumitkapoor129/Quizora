@@ -1,86 +1,61 @@
-import { useState, type FormEvent } from 'react';
-import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
-import { ApiError } from '@/api/client';
-import { Button } from '@/components/ui/Button';
+import { Link, Navigate, useSearchParams } from 'react-router-dom';
+import { api } from '@/api/client';
 import { Card } from '@/components/ui/Card';
-import { Field } from '@/components/ui/Field';
 import { useAuth } from '@/hooks/useAuth';
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-interface FieldErrors {
-  email?: string;
-  password?: string;
-  form?: string;
-}
-
-function validateEmail(value: string): string | undefined {
-  if (!value.trim()) return 'Email is required.';
-  if (!EMAIL_RE.test(value.trim())) return 'Enter a valid email address.';
-  return undefined;
-}
-
-function validatePassword(value: string): string | undefined {
-  if (!value) return 'Password is required.';
-  return undefined;
-}
 
 function safeNext(raw: string | null): string | null {
   if (!raw) return null;
-  // Same-origin validation: must be a root-relative internal path. Reject
-  // protocol-relative (`//host`) and backslash tricks (`/\host`).
-  if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return null;
+  // Same-origin validation, byte-identical to the server's `safeNext` in
+  // server/src/routes/auth.ts: root-relative paths only. Backslash is what
+  // makes `/\evil` and `/\/evil` protocol-relative for a browser that
+  // normalises it, and control characters/spaces are not real paths — the URL
+  // parser strips ASCII tab/LF/CR, so `/\t/evil.com` resolves cross-origin.
+  if (!raw.startsWith('/') || raw.startsWith('//') || /[\\\s\u0000-\u001f\u007f]/.test(raw)) return null;
   return raw;
 }
 
+/**
+ * Google's current brand "G", copied verbatim from Google's own hosted brand
+ * asset: https://developers.google.com/static/identity/images/branding_guideline_sample_lt_sq_sl.svg
+ * (linked from developers.google.com/identity/branding-guidelines). Google's
+ * guidelines require the newest version, full colour, unmodified — do not
+ * hand-edit these path or fill values. The asset draws the glyph at 10..30
+ * inside a 40x40 button tile; this <g> shifts that exact geometry into the
+ * 20x20 viewBox and changes nothing else.
+ */
+const GOOGLE_G = (
+  <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" focusable="false">
+    <g transform="translate(-10 -10)">
+      <path
+        d="M29.6 20.2273C29.6 19.5182 29.5364 18.8364 29.4182 18.1818H20V22.05H25.3818C25.15 23.3 24.4455 24.3591 23.3864 25.0682V27.5773H26.6182C28.5091 25.8364 29.6 23.2727 29.6 20.2273Z"
+        fill="#4285F4"
+      />
+      <path
+        d="M20 30C22.7 30 24.9636 29.1045 26.6181 27.5773L23.3863 25.0682C22.4909 25.6682 21.3454 26.0227 20 26.0227C17.3954 26.0227 15.1909 24.2636 14.4045 21.9H11.0636V24.4909C12.7091 27.7591 16.0909 30 20 30Z"
+        fill="#34A853"
+      />
+      <path
+        d="M14.4045 21.9C14.2045 21.3 14.0909 20.6591 14.0909 20C14.0909 19.3409 14.2045 18.7 14.4045 18.1V15.5091H11.0636C10.3864 16.8591 10 18.3864 10 20C10 21.6136 10.3864 23.1409 11.0636 24.4909L14.4045 21.9Z"
+        fill="#FBBC04"
+      />
+      <path
+        d="M20 13.9773C21.4681 13.9773 22.7863 14.4818 23.8227 15.4727L26.6909 12.6045C24.9591 10.9909 22.6954 10 20 10C16.0909 10 12.7091 12.2409 11.0636 15.5091L14.4045 18.1C15.1909 15.7364 17.3954 13.9773 20 13.9773Z"
+        fill="#E94235"
+      />
+    </g>
+  </svg>
+);
+
 export default function Login() {
-  const { user, status, expired, login } = useAuth();
-  const navigate = useNavigate();
+  const { user, status, expired } = useAuth();
   const [searchParams] = useSearchParams();
   const next = safeNext(searchParams.get('next'));
-
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [errors, setErrors] = useState<FieldErrors>({});
-  const [submitting, setSubmitting] = useState(false);
+  const oauthFailed = searchParams.get('oauth') === 'error';
 
   if (status === 'authenticated' && user && !expired) {
     // Next-aware so a post-login redirect and a fresh authenticated visit
     // can never race to different destinations.
     return <Navigate to={next ?? (user.role === 'admin' ? '/admin' : '/student')} replace />;
-  }
-
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    const nextErrors: FieldErrors = {
-      email: validateEmail(email),
-      password: validatePassword(password),
-    };
-    setErrors(nextErrors);
-    if (nextErrors.email) {
-      document.getElementById('email')?.focus();
-      return;
-    }
-    if (nextErrors.password) {
-      document.getElementById('password')?.focus();
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const authed = await login({ email: email.trim(), password });
-      navigate(next ?? (authed.role === 'admin' ? '/admin' : '/student'), { replace: true });
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setErrors({ form: 'Invalid email or password.' });
-        setPassword('');
-        document.getElementById('password')?.focus();
-      } else {
-        setErrors({ form: 'Something went wrong. Please try again.' });
-      }
-    } finally {
-      setSubmitting(false);
-    }
   }
 
   return (
@@ -95,57 +70,21 @@ export default function Login() {
 
         <Card className="auth-card">
           <h1 className="auth-title">Sign in</h1>
-          <p className="auth-sub">Welcome back. Enter your details to continue.</p>
+          <p className="auth-sub">Use your Google account to continue.</p>
 
-          <form onSubmit={handleSubmit} noValidate>
-            <Field
-              id="email"
-              label="Email"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={email}
-              disabled={submitting}
-              error={errors.email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                setErrors((prev) => ({ ...prev, email: undefined, form: undefined }));
-              }}
-              onBlur={() => setErrors((prev) => ({ ...prev, email: validateEmail(email) }))}
-            />
+          {oauthFailed && (
+            <p className="form-error" role="alert">
+              Sign-in didn&apos;t complete. Please try again.
+            </p>
+          )}
 
-            <Field
-              id="password"
-              label="Password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              disabled={submitting}
-              error={errors.password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setErrors((prev) => ({ ...prev, password: undefined, form: undefined }));
-              }}
-              onBlur={() => setErrors((prev) => ({ ...prev, password: validatePassword(password) }))}
-            />
-
-            {errors.form && (
-              <p className="form-error" role="alert">
-                {errors.form}
-              </p>
-            )}
-
-            <Button type="submit" className="btn--block" loading={submitting}>
-              {submitting ? 'Signing in…' : 'Sign in'}
-            </Button>
-          </form>
-
-          <p className="auth-footer">
-            Don't have an account? <Link to="/register">Create one</Link>
-          </p>
-          <p className="auth-footer">
-            <Link to="/forgot-password">Forgot password?</Link>
-          </p>
+          <a
+            className="btn btn--primary btn--md btn--block"
+            href={api.auth.googleStartUrl(next ?? undefined)}
+          >
+            {GOOGLE_G}
+            Continue with Google
+          </a>
         </Card>
       </div>
     </div>

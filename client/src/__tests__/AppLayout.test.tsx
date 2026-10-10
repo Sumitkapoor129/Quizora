@@ -12,8 +12,6 @@ function renderLayout(user: User) {
     sessionExpiresAt: null,
     status: 'authenticated',
     expired: false,
-    login: vi.fn(),
-    verifyRegister: vi.fn(),
     logout: vi.fn(),
   };
   render(

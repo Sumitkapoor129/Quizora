@@ -258,8 +258,6 @@ const authValue: AuthContextValue = {
   sessionExpiresAt: null,
   status: 'authenticated',
   expired: false,
-  login: vi.fn(),
-  verifyRegister: vi.fn(),
   logout: vi.fn(),
 };
 

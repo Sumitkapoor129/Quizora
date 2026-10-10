@@ -1,13 +1,11 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import argon2 from 'argon2';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
-
-const PASSWORD = 'password123';
+import { createTestSession } from './helpers/auth.js';
 
 const MULTI_AT_LEAST_ONE = 'A multi-answer question needs at least one correct option.';
 const IMPORT_ID_FORBIDDEN = "Import payload must not contain 'id' fields. Remove generated ids before importing.";
@@ -36,15 +34,10 @@ beforeAll(async () => {
   await User.init();
   await Test.init();
 
-  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<string> {
-    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
-    await User.create({ email, name, passwordHash, role });
-    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
-    return cookiePair(login, 'accessToken')!;
-  }
-
-  adminCookie = await seedUser('import-admin@example.com', 'Import Admin', 'ADMIN');
-  studentCookie = await seedUser('import-student@example.com', 'Import Student', 'STUDENT');
+  const admin = await createTestSession({ role: 'ADMIN' });
+  adminCookie = admin.accessCookie;
+  const student = await createTestSession({ role: 'STUDENT' });
+  studentCookie = student.accessCookie;
 }, 120_000);
 
 afterAll(async () => {
@@ -53,18 +46,6 @@ afterAll(async () => {
   await mongo?.stop();
   await rm(uploadDir, { recursive: true, force: true });
 });
-
-/** Returns the `name=value` pair (ready for a Cookie header) for `name`. */
-function cookiePair(res: request.Response, name: string): string | undefined {
-  const raw = res.headers['set-cookie'];
-  const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-  for (const cookie of list) {
-    const pair = cookie.split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq !== -1 && pair.slice(0, eq) === name) return pair;
-  }
-  return undefined;
-}
 
 /** A valid full-authoring payload (same shape as the PUT body). */
 const validContent = {

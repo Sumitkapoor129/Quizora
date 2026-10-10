@@ -1,14 +1,11 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import { join } from 'node:path';
-import argon2 from 'argon2';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Express } from 'express';
-
-const PASSWORD = 'password123';
-const NEW_PASSWORD = 'newpassword9';
+import { createTestSession } from './helpers/auth.js';
 
 const ATTEMPT_KEYS = ['attemptId', 'date', 'marksEarned', 'percent', 'status', 'testId', 'testTitle', 'totalMarks'];
 
@@ -36,19 +33,12 @@ beforeAll(async () => {
   await Test.init();
   await TestAttempt.init();
 
-  const admin = await seedUser('admin@example.com', 'Admin', 'ADMIN');
-  adminCookie = admin.cookie;
-  const s1 = await seedUser('s1@example.com', 'Student One', 'STUDENT');
-  studentCookie = s1.cookie;
-  const s2 = await seedUser('s2@example.com', 'Student Two', 'STUDENT');
-  student2Cookie = s2.cookie;
-
-  async function seedUser(email: string, name: string, role: 'ADMIN' | 'STUDENT'): Promise<{ id: string; cookie: string }> {
-    const passwordHash = await argon2.hash(PASSWORD, { type: argon2.argon2id });
-    await User.create({ email, name, passwordHash, role });
-    const login = await request(app).post('/api/auth/login').send({ email, password: PASSWORD });
-    return { id: String(login.body.user.id), cookie: cookiePair(login, 'accessToken')! };
-  }
+  const admin = await createTestSession({ role: 'ADMIN', email: 'admin@example.com', name: 'Admin' });
+  adminCookie = admin.accessCookie;
+  const s1 = await createTestSession({ role: 'STUDENT', email: 's1@example.com', name: 'Student One' });
+  studentCookie = s1.accessCookie;
+  const s2 = await createTestSession({ role: 'STUDENT', email: 's2@example.com', name: 'Student Two' });
+  student2Cookie = s2.accessCookie;
 }, 120_000);
 
 afterAll(async () => {
@@ -57,18 +47,6 @@ afterAll(async () => {
   await mongo?.stop();
   await rm(uploadDir, { recursive: true, force: true });
 });
-
-/** Returns the `name=value` pair (ready for a Cookie header) for `name`. */
-function cookiePair(res: request.Response, name: string): string | undefined {
-  const raw = res.headers['set-cookie'];
-  const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-  for (const cookie of list) {
-    const pair = cookie.split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq !== -1 && pair.slice(0, eq) === name) return pair;
-  }
-  return undefined;
-}
 
 // ---- Fixture builders (minimal: one section, one question worth 2 marks) ----
 
@@ -215,61 +193,20 @@ describe('PATCH /api/student/profile', () => {
     expect(me.body.user.name).toBe('Renamed Student');
   });
 
-  it('changes the password when the current password verifies', async () => {
+  it('updates the name and ignores unknown password fields', async () => {
+    const session = await createTestSession();
     const res = await request(app)
       .patch('/api/student/profile')
-      .set('Cookie', student2Cookie)
-      .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
-
+      .set('Cookie', session.accessCookie)
+      .send({ name: 'Renamed', currentPassword: 'whatever', newPassword: 'longenough' });
     expect(res.status).toBe(200);
-    expect(res.body.user).toEqual({
-      id: expect.any(String),
-      email: 's2@example.com',
-      name: 'Student Two',
-      role: 'STUDENT'
-    });
-
-    // The new password logs in; the old one no longer does.
-    const loginNew = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 's2@example.com', password: NEW_PASSWORD });
-    expect(loginNew.status).toBe(200);
-    const loginOld = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 's2@example.com', password: PASSWORD });
-    expect(loginOld.status).toBe(401);
+    expect(res.body.user.name).toBe('Renamed');
   });
 
-  it('rejects a wrong current password with 400 INVALID_CREDENTIALS', async () => {
-    const res = await request(app)
-      .patch('/api/student/profile')
-      .set('Cookie', studentCookie)
-      .send({ currentPassword: 'wrong-password', newPassword: 'anotherpassword1' });
-
+  it('rejects a body that changes nothing with 400 VALIDATION_ERROR', async () => {
+    const res = await request(app).patch('/api/student/profile').set('Cookie', studentCookie).send({});
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({
-      error: { code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect.' }
-    });
-  });
-
-  it('rejects a body with no name or password, and a too-short newPassword (400)', async () => {
-    const empty = await request(app).patch('/api/student/profile').set('Cookie', studentCookie).send({});
-    expect(empty.status).toBe(400);
-    expect(empty.body.error.code).toBe('VALIDATION_ERROR');
-    expect(empty.body.error.details).toContainEqual({
-      field: 'name',
-      message: 'Provide a name or a new password.'
-    });
-
-    const short = await request(app)
-      .patch('/api/student/profile')
-      .set('Cookie', studentCookie)
-      .send({ currentPassword: PASSWORD, newPassword: 'short' });
-    expect(short.status).toBe(400);
-    expect(short.body.error.code).toBe('VALIDATION_ERROR');
-    expect(short.body.error.details).toContainEqual({
-      field: 'newPassword',
-      message: 'Password must be at least 8 characters.'
-    });
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.details).toContainEqual({ field: 'name', message: 'Provide a name.' });
   });
 });

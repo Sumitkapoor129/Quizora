@@ -156,22 +156,32 @@ A regression test asserts the callback is not 403'd when the request carries
 ```
 1. state = query.state; cookieState = cookies.oauthState
    missing either, or they differ  → fail('state_mismatch')
-2. next = cookies.oauthNext ?? '/'          (already validated at start)
+ 2. next = safeNext(cookies.oauthNext)   (re-validated, not trusted: a sibling
+                                          subdomain can write that cookie)
 3. clear both oauth cookies (all paths, success or failure)
 4. if query.error (user denied access)       → fail('google_error')
 5. code = query.code; missing                → fail('missing_code')
 6. accessToken = exchangeCode(code)          → fail('exchange_failed') on throw
 7. profile = fetchProfile(accessToken)       → fail('profile_failed') on throw
-8. if (!profile.email || profile.email_verified === false) → fail('email_unverified')
-9. email = profile.email.trim().toLowerCase()
-   name  = profile.name?.trim() || email.split('@')[0]
-   role  = ADMIN_EMAILS.has(email) ? 'ADMIN' : 'STUDENT'
+ 8. if (!profile.email || profile.email_verified !== true) → fail('email_unverified')
+ 9. email = profile.email.trim().toLowerCase()
+    name  = profile.name?.trim() || email.split('@')[0]
+    role  = ADMIN_EMAILS.has(email) ? 'ADMIN' : 'STUDENT'
 10. user =
       (a) by googleId = profile.sub          → reuse
-      (b) else by email                       → set user.googleId = profile.sub,
+      (b) else by email, and user.googleId is unset → set user.googleId = profile.sub,
                                                  user.role = role, keep user.name
-      (c) else User.create({ googleId: profile.sub, email, name, role })
-    In (a) and (b) the role is always re-assigned per D4.
+      (c) else by email, and user.googleId is a DIFFERENT sub
+                                                 → fail('link_conflict')
+      (d) else User.create({ googleId: profile.sub, email, name, role })
+    In (a) and (b) the role is re-assigned per D4; in (d) it is set at creation.
+    The duplicate-key catch inside (d) adopts the winner's row only when that row
+    already belongs to `profile.sub`; otherwise it rethrows rather than hand one
+    Google identity another identity's account.
+    In (c) the email was reassigned to a new owner (recycled domain, lapsed
+    Workspace seat). Re-pointing googleId would hand the previous holder's
+    attempts and results to the newcomer, so refuse. Recovery is manual: clear
+    googleId on the row, and the rightful owner relinks on next sign-in.
 11. issueSession(user, res)
 12. 302 → APP_ORIGIN + next
 ```
@@ -179,7 +189,10 @@ A regression test asserts the callback is not 403'd when the request carries
 - The email used for lookup and for the `ADMIN_EMAILS` check is always
   lower-cased and trimmed, matching the schema's `lowercase, trim`.
 - `next` is never taken from the callback query — only from the httpOnly cookie,
-  so it cannot be tampered with between the two hops.
+  so it cannot be tampered with between the two hops. It is nonetheless re-run
+  through the same `safeNext` allowlist on the callback, because a host-only
+  cookie is still writable by a sibling subdomain, which `clearCookie` cannot
+  then remove.
 - Every `fail(reason)` logs `reason` server-side and answers
   `302 → APP_ORIGIN + '/login?oauth=error'`. No Google error string ever reaches
   the browser.
@@ -231,8 +244,10 @@ so any surviving reference is a TypeScript error rather than a silent `undefined
 production, `http://localhost:5173` in development — while
 `new URL(OAUTH_CALLBACK_URL).origin` would be the *server* origin and would land
 the browser on a 404 in development. **Invariant to document in the file: the
-first entry of `CLIENT_ORIGIN` is the app origin.** `CLIENT_ORIGIN` always has at
-least one entry (it defaults to `http://localhost:5173`).
+first entry of `CLIENT_ORIGIN` is the app origin.** The list can be empty
+(`CLIENT_ORIGIN=`), so production fail-fast rejects both an empty list and a
+first entry that is loopback (`localhost`, `127.0.0.1`, `[::1]`) — otherwise
+every successful sign-in would redirect to the wrong app, silently.
 
 ### 4.9 Deleted server files and dependencies
 
@@ -350,7 +365,7 @@ the minimum code is written to pass it.
 6. An email in `ADMIN_EMAILS` gets `role: 'ADMIN'`; a second sign-in for an email
    *removed* from the list is demoted back to `STUDENT`.
 7. `state` mismatch → no session, both cookies cleared, 302 `?oauth=error`.
-8. `email_verified: false` → 302 `?oauth=error` and no `User` created.
+8. `email_verified: false` (or absent, or the string `"false"`) → 302 `?oauth=error` and no `User` created.
 9. Google token endpoint returns 400 → 302 `?oauth=error`, no session.
 10. The callback with `Referer: https://accounts.google.com/` is **not** 403'd;
     `/api/auth/refresh` with the same foreign referer still is.
@@ -372,10 +387,22 @@ export async function createTestSession(opts?: { role?: 'ADMIN' | 'STUDENT'; ema
 ```
 
 `seedUser` creates the `User` alone. `createTestSession` is `seedUser` plus a real
-`RefreshSession` and a signed access token (via `signAccessToken` from
-`services/session.ts`) — `/me` requires a live session, so a cookie without one is
-not an authenticated user. Cookies are returned as ready-made `Cookie` header
-values (`accessToken=…`), so no file scrapes `set-cookie` any more.
+`RefreshSession` and a signed access token (via `signAccessToken` and
+`newRefreshToken` from `services/session.ts` — imported, never re-derived) — `/me`
+requires a live session, so a cookie without one is not an authenticated user.
+Cookies are returned as ready-made `Cookie` header values (`accessToken=…`), so no
+file scrapes `set-cookie` any more.
+
+Two constraints that are easy to trip over:
+
+- **The `src` imports inside the helper must be dynamic `await import(...)`.** Test
+  files assign `process.env.UPLOAD_DIR` in `beforeAll` and only then import `src`;
+  a static import in the helper would evaluate `config/env.ts` first and freeze
+  `UPLOAD_DIR` at its `'uploads'` default. Any new test module that imports `src`
+  has the same constraint.
+- **The helper seeds a real argon2 `passwordHash` until the schema stops requiring
+  one** (Task 4, same phase). That wart, and the `argon2` import, are deleted in
+  Task 4 — before `argon2` is removed from `package.json`, or the suite breaks.
 
 ### 7.3 Existing server tests
 

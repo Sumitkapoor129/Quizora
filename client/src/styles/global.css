@@ -564,17 +564,6 @@ body {
   margin-bottom: var(--space-5);
 }
 
-.auth-footer {
-  margin-top: var(--space-5);
-  font-size: var(--text-sm);
-  color: var(--ink-muted);
-  text-align: center;
-}
-
-.auth-footer a {
-  font-weight: 600;
-}
-
 .auth-actions {
   display: flex;
   flex-direction: column;

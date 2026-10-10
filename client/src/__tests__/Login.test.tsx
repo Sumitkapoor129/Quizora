@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { AuthContext, type AuthContextValue } from '@/context/AuthContext';
@@ -15,26 +14,20 @@ function authValue(overrides: Partial<AuthContextValue> = {}): AuthContextValue 
     sessionExpiresAt: null,
     status: 'anonymous',
     expired: false,
-    login: vi.fn(),
-    verifyRegister: vi.fn(),
     logout: vi.fn(),
     ...overrides,
   };
 }
 
-function renderLogin(overrides: Partial<AuthContextValue> = {}, initialEntry = '/login') {
-  const value = authValue(overrides);
-
+function renderLogin(overrides: Partial<AuthContextValue> = {}, search = '') {
   render(
     <MemoryRouter
-      initialEntries={[initialEntry]}
+      initialEntries={[`/login${search}`]}
       future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
     >
-      <AuthContext.Provider value={value}>
+      <AuthContext.Provider value={authValue(overrides)}>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<h1>Create your account</h1>} />
-          <Route path="/forgot-password" element={<h1>Forgot password</h1>} />
           <Route path="/student" element={<h1>Student home</h1>} />
           <Route path="/student/results" element={<h1>My results</h1>} />
           <Route path="/admin" element={<h1>Admin home</h1>} />
@@ -42,62 +35,89 @@ function renderLogin(overrides: Partial<AuthContextValue> = {}, initialEntry = '
       </AuthContext.Provider>
     </MemoryRouter>,
   );
-
-  return value;
 }
 
 describe('Login', () => {
-  it('shows validation errors and does not sign in when fields are empty', async () => {
-    const { login } = renderLogin();
-    const user = userEvent.setup();
+  // The href is asserted with a regex, never an exact string: BASE_URL is
+  // 'http://localhost:3001' under vitest (import.meta.env.DEV) and '' in the
+  // production bundle, so only the path is a stable contract.
+  // The name is asserted exactly: the official Google G is aria-hidden, so the
+  // accessible name must be precisely "Continue with Google" and nothing else.
+  it('offers exactly one Google link pointing at the OAuth start route', () => {
+    renderLogin();
 
-    await user.click(screen.getByRole('button', { name: /sign in/i }));
-
-    expect(await screen.findByText('Email is required.')).toBeInTheDocument();
-    expect(screen.getByText('Password is required.')).toBeInTheDocument();
-    expect(login).not.toHaveBeenCalled();
+    const links = screen.getAllByRole('link', { name: 'Continue with Google' });
+    expect(links).toHaveLength(1);
+    expect(links[0].getAttribute('href')).toMatch(/\/api\/auth\/oauth\/google$/);
   });
 
-  it('signs in with credentials and navigates to the role home', async () => {
-    const { login } = renderLogin({ login: vi.fn().mockResolvedValue(student) });
-    const user = userEvent.setup();
+  it('offers no password, register or password-reset controls', () => {
+    renderLogin();
 
-    await user.type(screen.getByLabelText('Email'), 'aria@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: /sign in/i }));
-
-    await waitFor(() =>
-      expect(login).toHaveBeenCalledWith({ email: 'aria@example.com', password: 'password123' }),
-    );
-    expect(await screen.findByRole('heading', { name: 'Student home' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /sign in/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/password/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/email/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /create one|register|forgot password/i })).not.toBeInTheDocument();
   });
 
-  it('redirects an already-authenticated admin away from the login form', async () => {
+  it('preserves a safe ?next so the user returns where they were headed', () => {
+    renderLogin({}, '?next=%2Fstudent%2Fresults');
+
+    expect(
+      screen.getByRole('link', { name: 'Continue with Google' }).getAttribute('href'),
+    ).toMatch(/\/api\/auth\/oauth\/google\?next=%2Fstudent%2Fresults$/);
+  });
+
+  // Every one of these resolves cross-origin in a browser, or is not a path at
+  // all. `/\t/evil.com` is the subtle one: the URL parser strips ASCII tab
+  // before resolving, so it is protocol-relative. The validator is a security
+  // control, so each rejection branch needs a case.
+  it.each([
+    ['protocol-relative', '//evil.example.com'],
+    ['backslash-normalised', '/%5Cevil.example.com'],
+    ['tab-stripped', '/%09/evil.example.com'],
+    ['absolute URL', 'https://evil.example.com'],
+    ['relative path', 'student/results'],
+  ])('drops an unsafe ?next (%s)', (_label, next) => {
+    renderLogin({}, `?next=${next}`);
+
+    const href = screen.getByRole('link', { name: 'Continue with Google' }).getAttribute('href');
+    expect(href).toMatch(/\/api\/auth\/oauth\/google$/);
+    expect(href).not.toContain('evil.example.com');
+  });
+
+  it('shows the failure banner for ?oauth=error, and no banner without it', () => {
+    renderLogin({}, '?oauth=error');
+
+    expect(screen.getByRole('alert')).toHaveTextContent(/sign-in didn't complete/i);
+  });
+
+  it('shows no failure banner on a normal visit', () => {
+    renderLogin();
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('redirects an already-authenticated user away from the Google link', async () => {
     renderLogin({ user: admin, status: 'authenticated' });
 
     expect(await screen.findByRole('heading', { name: 'Admin home' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: 'Continue with Google' }),
+    ).not.toBeInTheDocument();
   });
 
-  it('returns to the ?next= path after signing in (session re-login)', async () => {
-    renderLogin(
-      { login: vi.fn().mockResolvedValue(student) },
-      '/login?next=%2Fstudent%2Fresults',
-    );
-    const user = userEvent.setup();
-
-    await user.type(screen.getByLabelText('Email'), 'aria@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: /sign in/i }));
+  it('sends an already-authenticated user to ?next when one is supplied', async () => {
+    renderLogin({ user: student, status: 'authenticated' }, '?next=%2Fstudent%2Fresults');
 
     expect(await screen.findByRole('heading', { name: 'My results' })).toBeInTheDocument();
   });
 
-  it('links to the forgot-password page', async () => {
-    renderLogin();
-    const user = userEvent.setup();
+  // The already-authenticated branch navigates with <Navigate to={next}>, which
+  // bypasses the server entirely, so the client validator is the only guard.
+  it('refuses to navigate an authenticated user to a cross-origin ?next', async () => {
+    renderLogin({ user: student, status: 'authenticated' }, '?next=%2F%09%2Fevil.example.com');
 
-    await user.click(await screen.findByRole('link', { name: 'Forgot password?' }));
-
-    expect(await screen.findByRole('heading', { name: 'Forgot password' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Student home' })).toBeInTheDocument();
   });
 });
