@@ -137,7 +137,26 @@ export function productionProblems(d: ProductionConfig): string[] {
   // dev-first list (or an empty one) would send every user to localhost, or to
   // the relative "undefined/". Fail loudly at boot instead of at first sign-in.
   const originProblem = appOriginProblem(d.CLIENT_ORIGIN);
-  if (originProblem) problems.push(originProblem);
+  if (originProblem) {
+    problems.push(originProblem);
+  } else if (d.OAUTH_CALLBACK_URL) {
+    // The state cookie is host-only: it is set where /api/auth/oauth/google is
+    // served (the client origin — the client calls same-origin in production)
+    // and read on the callback. A callback on a different host (e.g. the Render
+    // API domain while the app is on Vercel) never receives it, so every
+    // sign-in dies as state_mismatch. Refuse to boot instead.
+    let callbackOrigin: string | null = null;
+    try {
+      callbackOrigin = new URL(d.OAUTH_CALLBACK_URL).origin;
+    } catch {
+      callbackOrigin = null;
+    }
+    if (callbackOrigin && callbackOrigin !== d.CLIENT_ORIGIN[0]) {
+      problems.push(
+        `[env] OAUTH_CALLBACK_URL must be on the app origin "${d.CLIENT_ORIGIN[0]}", not "${callbackOrigin}". The oauthState cookie is host-only, so a callback on another host fails state validation.`
+      );
+    }
+  }
   return problems;
 }
 
