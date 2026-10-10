@@ -175,7 +175,17 @@ authRouter.get(
 
     const expected = req.cookies?.oauthState;
     const state = typeof req.query.state === 'string' ? req.query.state : '';
-    if (!expected || !state || expected !== state) return failOauth(res, 'state_mismatch');
+    if (!expected || !state || expected !== state) {
+  console.warn('[oauth] state validation failed', {
+    cookiePresent: Boolean(expected),
+    statePresent: Boolean(state),
+    stateMatches: Boolean(expected && state && expected === state),
+    hostname: req.hostname,
+    secure: req.secure
+  });
+
+  return failOauth(res, 'state_mismatch');
+}
 
     if (req.query.error) return failOauth(res, `google_error:${String(req.query.error)}`);
 
