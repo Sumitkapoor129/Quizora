@@ -1,181 +1,371 @@
+
 import 'dotenv/config';
 import { z } from 'zod';
 
 const isTest = process.env.NODE_ENV === 'test';
 
-// JWT secrets must be >= 32 chars outside test mode (short determinism is fine
-// for the test harness). Presence is still validated manually below.
+// JWT secrets must be at least 32 characters outside test mode.
 const secretSchema = isTest
   ? z.string().optional()
-  : z.string().min(32).refine((v) => !v.includes('replace-with-a-random'), '[env] JWT secret must not be the example placeholder.').optional();
+  : z
+      .string()
+      .min(32)
+      .refine(
+        (v) => !v.includes('replace-with-a-random'),
+        '[env] JWT secret must not be the example placeholder.'
+      )
+      .optional();
 
-/** Comma-separated allowlist -> lower-cased set. Shared shape with CLIENT_ORIGIN. */
+/**
+ * Convert comma-separated emails into a lowercase Set.
+ */
 export function parseEmailList(raw: string): Set<string> {
-  return new Set(raw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+  );
 }
 
-/** The subset of the validated env that the production gate inspects. */
+/**
+ * Production configuration validation type.
+ */
 export type ProductionConfig = {
   NODE_ENV: string;
   GOOGLE_OAUTH_CLIENT_ID?: string;
   GOOGLE_OAUTH_CLIENT_SECRET?: string;
   OAUTH_CALLBACK_URL?: string;
+  PUBLIC_BACKEND_ORIGIN?: string;
   ADMIN_EMAILS: string;
   COOKIE_SECURE: boolean;
   CLIENT_ORIGIN: string[];
 };
 
 /**
- * A completed Google sign-in redirects to the FIRST client origin, so a dev-first
- * or empty list breaks sign-in in production. Returns the boot error, or null.
- * Extracted as a pure function because the production block itself calls
- * process.exit() at import time and cannot be exercised in-process.
+ * Validate the frontend redirect origin.
+ * The first origin is where users land after Google login.
  */
-export function appOriginProblem(origins: string[]): string | null {
+export function appOriginProblem(
+  origins: string[]
+): string | null {
   const first = origins[0];
+
   if (!first) {
-    return '[env] CLIENT_ORIGIN is required in production (comma-separated; the first entry is where sign-in redirects to).';
+    return '[env] CLIENT_ORIGIN is required in production.';
   }
-  if (!/^https?:\/\//i.test(first)) {
-    return `[env] CLIENT_ORIGIN must start with http:// or https://, but its first entry is "${first}". Sign-in would redirect users there.`;
+
+  let url: URL;
+
+  try {
+    url = new URL(first);
+  } catch {
+    return `[env] Invalid CLIENT_ORIGIN: "${first}".`;
   }
-  // Anchored on the authority terminator so a public domain that merely starts
-  // with "localhost" (https://localhost.example.com) is not rejected.
-  if (/^https?:\/\/(localhost|127(?:\.\d+){1,3}|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(first)) {
-    return `[env] CLIENT_ORIGIN must list the production app first, but its first entry is "${first}". Sign-in would redirect users there.`;
+
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    return '[env] CLIENT_ORIGIN must use HTTP or HTTPS.';
   }
+
+  if (
+    url.username ||
+    url.password ||
+    url.pathname !== '/' ||
+    url.search ||
+    url.hash
+  ) {
+    return '[env] CLIENT_ORIGIN must be an origin without paths, credentials, queries, or fragments.';
+  }
+
+  const hostname = url.hostname.toLowerCase();
+
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '0.0.0.0' ||
+    hostname === '[::1]' ||
+    /^127\.\d+\.\d+\.\d+$/.test(hostname)
+  ) {
+    return '[env] CLIENT_ORIGIN must list the production frontend first, not localhost.';
+  }
+
+  if (url.protocol !== 'https:') {
+    return '[env] Production CLIENT_ORIGIN must use HTTPS.';
+  }
+
   return null;
 }
 
+/**
+ * Zod environment schema.
+ */
 const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3001),
-  // Validated for presence manually below (exempt in test mode so vitest can
-  // run without a real MongoDB).
+  NODE_ENV: z
+    .enum(['development', 'test', 'production'])
+    .default('development'),
+
+  PORT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(65535)
+    .default(3001),
+
   MONGODB_URI: z.string().optional(),
+
   JWT_ACCESS_SECRET: secretSchema,
+
   CLIENT_ORIGIN: z
     .string()
     .default('http://localhost:5173')
-    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
-  // Google OAuth (Phase 12). Optional so the server boots in development; the
-  // production fail-fast below is what guarantees they are set where it counts.
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    ),
+
+  // Public HTTPS URL of the Express backend.
+  PUBLIC_BACKEND_ORIGIN: z
+    .string()
+    .url()
+    .optional(),
+
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
+
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
-  OAUTH_CALLBACK_URL: z.string().url().refine((u) => u.startsWith('http'), 'Must be an http(s) URL.').optional(),
-  // Comma-separated emails that resolve to role ADMIN on every Google sign-in.
+
+  OAUTH_CALLBACK_URL: z
+    .string()
+    .url()
+    .refine(
+      (u) =>
+        u.startsWith('http://') ||
+        u.startsWith('https://'),
+      'Must be an HTTP(S) URL.'
+    )
+    .optional(),
+
   ADMIN_EMAILS: z.string().default(''),
+
   COOKIE_SECURE: z
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  // Directory for admin-uploaded test images (relative to process cwd).
+
   UPLOAD_DIR: z.string().default('uploads')
 });
 
+/**
+ * Parse and validate environment variables.
+ */
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
-  const bad = parsed.error.issues.map((i) => i.path.join('.') || '(root)').join(', ');
-  console.error(`[env] Invalid environment configuration. Missing or invalid: ${bad}`);
+  const bad = parsed.error.issues
+    .map((i) => i.path.join('.') || '(root)')
+    .join(', ');
+
+  console.error(
+    `[env] Invalid environment configuration. Missing or invalid: ${bad}`
+  );
+
   process.exit(1);
 }
 
+// After process.exit() TypeScript knows parsing succeeded.
+const data = parsed.data;
+
+/**
+ * Required configuration for non-test environments.
+ */
 if (!isTest) {
-  const missing: Array<{ key: string; hint: string }> = [];
-  if (!parsed.data.MONGODB_URI) {
+  const missing: Array<{
+    key: string;
+    hint: string;
+  }> = [];
+
+  if (!data.MONGODB_URI) {
     missing.push({
       key: 'MONGODB_URI',
-      hint: "MONGODB_URI is required. Set it in server/.env (e.g. an Atlas connection string). Tests use mongodb-memory-server and don't need it."
+      hint: '[env] MONGODB_URI is required.'
     });
   }
-  if (!parsed.data.JWT_ACCESS_SECRET) {
+
+  if (!data.JWT_ACCESS_SECRET) {
     missing.push({
       key: 'JWT_ACCESS_SECRET',
-      hint: 'JWT_ACCESS_SECRET is required. Set a long random value in server/.env.'
+      hint: '[env] JWT_ACCESS_SECRET is required.'
     });
   }
-  // Required in every env, not just production: the first entry is where a
-  // completed Google sign-in lands, so an empty list would redirect to the
-  // relative "undefined/" and sign the user in on a 404 page.
-  if (parsed.data.CLIENT_ORIGIN.length === 0) {
+
+  if (data.CLIENT_ORIGIN.length === 0) {
     missing.push({
       key: 'CLIENT_ORIGIN',
-      hint: 'CLIENT_ORIGIN is required. List the app origin users land on after sign-in, e.g. http://localhost:5173.'
+      hint: '[env] CLIENT_ORIGIN is required.'
     });
   }
+
   if (missing.length > 0) {
-    for (const m of missing) console.error(m.hint);
+    for (const m of missing) {
+      console.error(m.hint);
+    }
+
     process.exit(1);
   }
 }
 
 /**
- * Every production boot blocker, as messages. Pure and exported so it can be
- * tested directly: the real block below calls process.exit() at import time, so
- * without this seam the checks themselves would be untested.
+ * Validate production-only requirements.
+ *
+ * Frontend and backend may have different origins.
+ * The OAuth callback must point to the backend.
  */
-export function productionProblems(d: ProductionConfig): string[] {
-  if (d.NODE_ENV !== 'production') return [];
+export function productionProblems(
+  d: ProductionConfig
+): string[] {
+  if (d.NODE_ENV !== 'production') {
+    return [];
+  }
+
   const problems: string[] = [];
+
   if (!d.GOOGLE_OAUTH_CLIENT_ID) {
-    problems.push('[env] GOOGLE_OAUTH_CLIENT_ID is required in production (Google Cloud OAuth client).');
+    problems.push(
+      '[env] GOOGLE_OAUTH_CLIENT_ID is required in production.'
+    );
   }
+
   if (!d.GOOGLE_OAUTH_CLIENT_SECRET) {
-    problems.push('[env] GOOGLE_OAUTH_CLIENT_SECRET is required in production (Google Cloud OAuth client).');
+    problems.push(
+      '[env] GOOGLE_OAUTH_CLIENT_SECRET is required in production.'
+    );
   }
+
   if (!d.OAUTH_CALLBACK_URL) {
-    problems.push('[env] OAUTH_CALLBACK_URL is required in production (the /api/auth/oauth/google/callback URL).');
+    problems.push(
+      '[env] OAUTH_CALLBACK_URL is required in production.'
+    );
   }
+
+  if (!d.PUBLIC_BACKEND_ORIGIN) {
+    problems.push(
+      '[env] PUBLIC_BACKEND_ORIGIN is required in production.'
+    );
+  }
+
   if (parseEmailList(d.ADMIN_EMAILS).size === 0) {
-    problems.push('[env] ADMIN_EMAILS is required in production (comma-separated admin emails; an empty list would demote every admin on their next sign-in).');
+    problems.push(
+      '[env] ADMIN_EMAILS is required in production.'
+    );
   }
+
   if (!d.COOKIE_SECURE) {
-    problems.push('[env] COOKIE_SECURE must be "true" in production (secure cookies require HTTPS).');
+    problems.push(
+      '[env] COOKIE_SECURE must be "true" in production.'
+    );
   }
-  // The FIRST client origin is where a completed Google sign-in lands, so a
-  // dev-first list (or an empty one) would send every user to localhost, or to
-  // the relative "undefined/". Fail loudly at boot instead of at first sign-in.
+
+  // Validate frontend origin.
   const originProblem = appOriginProblem(d.CLIENT_ORIGIN);
+
   if (originProblem) {
     problems.push(originProblem);
-  } else if (d.OAUTH_CALLBACK_URL) {
-    // The state cookie is host-only: it is set where /api/auth/oauth/google is
-    // served (the client origin — the client calls same-origin in production)
-    // and read on the callback. A callback on a different host (e.g. the Render
-    // API domain while the app is on Vercel) never receives it, so every
-    // sign-in dies as state_mismatch. Refuse to boot instead.
-    let callbackOrigin: string | null = null;
+  }
+
+  // Validate that the OAuth callback uses the backend,
+  // not the Vercel frontend.
+  if (d.OAUTH_CALLBACK_URL && d.PUBLIC_BACKEND_ORIGIN) {
     try {
-      callbackOrigin = new URL(d.OAUTH_CALLBACK_URL).origin;
+      const callback = new URL(d.OAUTH_CALLBACK_URL);
+      const backend = new URL(d.PUBLIC_BACKEND_ORIGIN);
+
+      if (
+        backend.protocol !== 'https:' ||
+        backend.username ||
+        backend.password ||
+        backend.pathname !== '/' ||
+        backend.search ||
+        backend.hash
+      ) {
+        problems.push(
+          '[env] PUBLIC_BACKEND_ORIGIN must be a clean HTTPS origin.'
+        );
+      }
+
+      if (
+        callback.protocol !== 'https:' ||
+        callback.origin !== backend.origin ||
+        callback.pathname !==
+          '/api/auth/oauth/google/callback' ||
+        callback.search ||
+        callback.hash ||
+        callback.username ||
+        callback.password
+      ) {
+        problems.push(
+          '[env] OAUTH_CALLBACK_URL must use the backend HTTPS origin and /api/auth/oauth/google/callback path.'
+        );
+      }
     } catch {
-      callbackOrigin = null;
-    }
-    if (callbackOrigin && callbackOrigin !== d.CLIENT_ORIGIN[0]) {
       problems.push(
-        `[env] OAUTH_CALLBACK_URL must be on the app origin "${d.CLIENT_ORIGIN[0]}", not "${callbackOrigin}". The oauthState cookie is host-only, so a callback on another host fails state validation.`
+        '[env] Invalid OAuth callback or backend origin URL.'
       );
     }
   }
+
   return problems;
 }
 
-const problems = productionProblems(parsed.data);
+/**
+ * Fail fast if production configuration is invalid.
+ */
+const problems = productionProblems(data);
+
 if (problems.length > 0) {
-  for (const p of problems) console.error(p);
+  for (const problem of problems) {
+    console.error(problem);
+  }
+
   process.exit(1);
 }
 
+/**
+ * Export validated environment configuration.
+ */
 export const env = {
-  NODE_ENV: parsed.data.NODE_ENV,
-  PORT: parsed.data.PORT,
-  MONGODB_URI: parsed.data.MONGODB_URI ?? '',
-  JWT_ACCESS_SECRET: parsed.data.JWT_ACCESS_SECRET ?? (isTest ? 'test-access-secret' : ''),
-  CLIENT_ORIGINS: parsed.data.CLIENT_ORIGIN,
-  GOOGLE_OAUTH_CLIENT_ID: parsed.data.GOOGLE_OAUTH_CLIENT_ID ?? (isTest ? 'test-google-client-id' : ''),
-  GOOGLE_OAUTH_CLIENT_SECRET: parsed.data.GOOGLE_OAUTH_CLIENT_SECRET ?? (isTest ? 'test-google-client-secret' : ''),
-  OAUTH_CALLBACK_URL: parsed.data.OAUTH_CALLBACK_URL ?? (isTest ? 'http://localhost:3001/api/auth/oauth/google/callback' : ''),
-  ADMIN_EMAIL_SET: parseEmailList(parsed.data.ADMIN_EMAILS),
-  COOKIE_SECURE: parsed.data.COOKIE_SECURE,
-  UPLOAD_DIR: parsed.data.UPLOAD_DIR
+  NODE_ENV: data.NODE_ENV,
+
+  PORT: data.PORT,
+
+  MONGODB_URI: data.MONGODB_URI ?? '',
+
+  JWT_ACCESS_SECRET:
+    data.JWT_ACCESS_SECRET ??
+    (isTest ? 'test-access-secret' : ''),
+
+  CLIENT_ORIGINS: data.CLIENT_ORIGIN,
+
+  PUBLIC_BACKEND_ORIGIN:
+    data.PUBLIC_BACKEND_ORIGIN ?? '',
+
+  GOOGLE_OAUTH_CLIENT_ID:
+    data.GOOGLE_OAUTH_CLIENT_ID ??
+    (isTest ? 'test-google-client-id' : ''),
+
+  GOOGLE_OAUTH_CLIENT_SECRET:
+    data.GOOGLE_OAUTH_CLIENT_SECRET ??
+    (isTest ? 'test-google-client-secret' : ''),
+
+  OAUTH_CALLBACK_URL:
+    data.OAUTH_CALLBACK_URL ??
+    (isTest
+      ? 'http://localhost:3001/api/auth/oauth/google/callback'
+      : ''),
+
+  ADMIN_EMAIL_SET: parseEmailList(data.ADMIN_EMAILS),
+
+  COOKIE_SECURE: data.COOKIE_SECURE,
+
+  UPLOAD_DIR: data.UPLOAD_DIR
 } as const;
