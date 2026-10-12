@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { appOriginProblem, parseEmailList, productionProblems } from '../src/config/env.js';
+import { originListProblem, resolveEnvironmentProfile } from '../src/config/environmentProfile.js';
 
 /** A production config that must boot clean; override one field to break it. */
 const validProd = {
   NODE_ENV: 'production',
   GOOGLE_OAUTH_CLIENT_ID: 'id',
   GOOGLE_OAUTH_CLIENT_SECRET: 'secret',
-  OAUTH_CALLBACK_URL: 'https://quizora-rho.vercel.app/api/auth/oauth/google/callback',
+  OAUTH_CALLBACK_URL: 'https://quizora-ppfp.onrender.com/api/auth/oauth/google/callback',
+  PUBLIC_BACKEND_ORIGIN: 'https://quizora-ppfp.onrender.com',
   ADMIN_EMAILS: 'admin@example.com',
   COOKIE_SECURE: true,
   CLIENT_ORIGIN: ['https://quizora-rho.vercel.app']
@@ -33,7 +35,7 @@ describe('appOriginProblem', () => {
   it('rejects a dev-first list, which would send every sign-in to localhost', () => {
     // The shape server/.env.example ships.
     const problem = appOriginProblem(['http://localhost:5173', 'https://quizora-rho.vercel.app']);
-    expect(problem).toContain('localhost:5173');
+    expect(problem).toContain('localhost');
   });
 
   it('rejects every loopback spelling', () => {
@@ -46,7 +48,7 @@ describe('appOriginProblem', () => {
       'http://[::1]:5173',
       'http://LOCALHOST:5173'
     ]) {
-      expect(appOriginProblem([first]), first).toContain(first);
+      expect(appOriginProblem([first]), first).not.toBeNull();
     }
   });
 
@@ -56,7 +58,7 @@ describe('appOriginProblem', () => {
   });
 
   it('rejects a first entry that is not an http(s) URL', () => {
-    expect(appOriginProblem(['javascript:alert(1)'])).toContain('http://');
+    expect(appOriginProblem(['javascript:alert(1)'])).toContain('HTTP');
   });
 
   it('rejects an empty list, which would redirect to "undefined/"', () => {
@@ -88,11 +90,12 @@ describe('productionProblems', () => {
       COOKIE_SECURE: false,
       CLIENT_ORIGIN: []
     });
-    expect(problems).toHaveLength(6);
+    expect(problems).toHaveLength(7);
     for (const key of [
       'GOOGLE_OAUTH_CLIENT_ID',
       'GOOGLE_OAUTH_CLIENT_SECRET',
       'OAUTH_CALLBACK_URL',
+      'PUBLIC_BACKEND_ORIGIN',
       'ADMIN_EMAILS',
       'COOKIE_SECURE',
       'CLIENT_ORIGIN'
@@ -107,18 +110,66 @@ describe('productionProblems', () => {
       CLIENT_ORIGIN: ['http://localhost:5173', 'https://quizora-rho.vercel.app']
     });
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('localhost:5173');
+    expect(problems[0]).toContain('localhost');
   });
 
-  it('rejects a callback on a different host than the app (the state_mismatch bug)', () => {
-    // The live misconfiguration: app on Vercel, callback pinned to the Render
-    // API host. The host-only oauthState cookie never crosses over.
+  it('rejects a callback on the frontend instead of the backend', () => {
     const problems = productionProblems({
       ...validProd,
-      OAUTH_CALLBACK_URL: 'https://quizora-ppfp.onrender.com/api/auth/oauth/google/callback'
+      OAUTH_CALLBACK_URL: 'https://quizora-rho.vercel.app/api/auth/oauth/google/callback'
     });
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('quizora-ppfp.onrender.com');
-    expect(problems[0]).toContain('quizora-rho.vercel.app');
+    expect(problems[0]).toContain('OAUTH_CALLBACK_URL');
   });
+
+  it.each([
+    'https://quizora-ppfp.onrender.com/wrong-path',
+    'https://quizora-ppfp.onrender.com/api/auth/oauth/google/callback?redirect=evil',
+    'http://quizora-ppfp.onrender.com/api/auth/oauth/google/callback'
+  ])('rejects unsafe callback %s', (OAUTH_CALLBACK_URL) => {
+    expect(productionProblems({ ...validProd, OAUTH_CALLBACK_URL })).not.toEqual([]);
+  });
+});
+
+describe('deployment profiles', () => {
+  const profiles = {
+    CLIENT_ORIGIN_DEV: 'http://localhost:5173,http://127.0.0.1:5173',
+    CLIENT_ORIGIN_PROD: 'https://app.example.com',
+    PUBLIC_BACKEND_ORIGIN_DEV: 'http://localhost:3001',
+    PUBLIC_BACKEND_ORIGIN_PROD: 'https://api.example.com',
+    OAUTH_CALLBACK_URL_DEV: 'http://localhost:3001/api/auth/oauth/google/callback',
+    OAUTH_CALLBACK_URL_PROD: 'https://api.example.com/api/auth/oauth/google/callback',
+    COOKIE_SECURE_DEV: 'false', COOKIE_SECURE_PROD: 'true'
+  };
+  it.each(['development', 'test', 'production'])('selects settings for %s', (NODE_ENV) => {
+    const suffix = NODE_ENV === 'production' ? 'PROD' : 'DEV';
+    const resolved = resolveEnvironmentProfile({ ...profiles, NODE_ENV, CLIENT_ORIGIN: 'https://legacy.example.com' });
+    for (const key of ['CLIENT_ORIGIN', 'PUBLIC_BACKEND_ORIGIN', 'OAUTH_CALLBACK_URL', 'COOKIE_SECURE']) {
+      expect(resolved[key]).toBe(profiles[`${key}_${suffix}` as keyof typeof profiles]);
+    }
+  });
+  it('preserves legacy explicit settings', () => {
+    const legacy = { CLIENT_ORIGIN: 'http://localhost:4200', PUBLIC_BACKEND_ORIGIN: 'http://localhost:4000', OAUTH_CALLBACK_URL: 'http://localhost:4000/api/auth/oauth/google/callback', COOKIE_SECURE: 'false' };
+    expect(resolveEnvironmentProfile(legacy)).toMatchObject(legacy);
+  });
+  it('provides local defaults and uses the configured backend port', () => {
+    expect(resolveEnvironmentProfile({ PORT: '4000' })).toMatchObject({
+      CLIENT_ORIGIN: 'http://localhost:5173,http://127.0.0.1:5173',
+      PUBLIC_BACKEND_ORIGIN: 'http://localhost:4000',
+      OAUTH_CALLBACK_URL: 'http://localhost:4000/api/auth/oauth/google/callback',
+      COOKIE_SECURE: 'false'
+    });
+  });
+  it('never silently defaults production to localhost', () => {
+    const selected = resolveEnvironmentProfile({ NODE_ENV: 'production', ...profiles, CLIENT_ORIGIN_PROD: undefined, PUBLIC_BACKEND_ORIGIN_PROD: undefined, OAUTH_CALLBACK_URL_PROD: undefined });
+    expect(selected.CLIENT_ORIGIN).toBeUndefined();
+    expect(selected.PUBLIC_BACKEND_ORIGIN).toBeUndefined();
+    expect(selected.OAUTH_CALLBACK_URL).toBeUndefined();
+    expect(selected.COOKIE_SECURE).toBe('true');
+  });
+  it.each(['https://good.example/path', 'https://user:secret@good.example', 'https://good.example?x=1', 'javascript:alert(1)', 'not-a-url'])(
+    'validates every origin, including secondary entry %s', (bad) => {
+      expect(originListProblem(['https://good.example', bad])).not.toBeNull();
+    }
+  );
 });

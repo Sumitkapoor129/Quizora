@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/api/client';
 import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
+import { OrbitGraphic } from '@/components/visual/OrbitGraphic';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { useAuth } from '@/hooks/useAuth';
@@ -36,8 +37,14 @@ export default function StudentDashboard() {
 
   return (
     <>
-      <h1 className="page-heading">Welcome, {firstName}</h1>
-      <p className="page-sub">Here's what's new, and where you left off.</p>
+      <header className="dashboard-header">
+        <div>
+          <p className="page-eyebrow">YOUR LEARNING SPACE</p>
+          <h1 className="page-heading">Welcome, {firstName}</h1>
+          <p className="page-sub">Here's what's new, and where you left off.</p>
+        </div>
+        <Link className="btn btn--secondary btn--md" to="/student/results">View my results <span aria-hidden="true">↗</span></Link>
+      </header>
 
       {isPending && (
         <div role="status" aria-label="Loading your dashboard">
@@ -65,24 +72,38 @@ export default function StudentDashboard() {
 
       {!isPending && !allFailed && (
         <>
+          <section className="dashboard-banner" aria-labelledby="learning-banner-title">
+            <div className="dashboard-banner__copy">
+              <p className="dashboard-banner__eyebrow">A LITTLE PROGRESS, EVERY DAY</p>
+              <h2 className="dashboard-banner__title" id="learning-banner-title">Make room for your next breakthrough.</h2>
+              <p className="dashboard-banner__description">Put your knowledge into practice. Your next test is a fresh opportunity to learn.</p>
+              <Link className="btn btn--primary btn--md" to="/student/tests">Explore tests <span aria-hidden="true">↗</span></Link>
+            </div>
+            <div className="dashboard-banner__art"><OrbitGraphic /></div>
+          </section>
+
           <section className="section" aria-label="Summary">
             <div className="stat-grid stat-grid--4">
               <Card className="stat-card">
+                <span className="stat-card__icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3h9l3 3v15H6z M9 10h6 M9 14h6 M9 18h3" /></svg></span>
                 <p className="stat-card__value">{testsQuery.isError ? '—' : tests.length}</p>
                 <p className="stat-card__label">Tests available</p>
                 <p className="stat-card__hint">{testsQuery.isError ? 'Unavailable' : 'Ready to take now'}</p>
               </Card>
               <Card className="stat-card">
+                <span className="stat-card__icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12l5 5L20 6" /></svg></span>
                 <p className="stat-card__value">{attemptsQuery.isError ? '—' : completed.length}</p>
                 <p className="stat-card__label">Tests taken</p>
                 <p className="stat-card__hint">{attemptsQuery.isError ? 'Unavailable' : 'Completed attempts'}</p>
               </Card>
               <Card className="stat-card">
+                <span className="stat-card__icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20V10 M10 20V4 M16 20v-8 M22 20H2" /></svg></span>
                 <p className="stat-card__value">{attemptsQuery.isError ? '—' : formatPercent(average)}</p>
                 <p className="stat-card__label">Average score</p>
                 <p className="stat-card__hint">{attemptsQuery.isError ? 'Unavailable' : 'Across completed tests'}</p>
               </Card>
               <Card className="stat-card">
+                <span className="stat-card__icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3a9 9 0 1 0 9 9 M12 7v5l3 2" /></svg></span>
                 <p className="stat-card__value">{attemptsQuery.isError ? '—' : inProgressCount}</p>
                 <p className="stat-card__label">In progress</p>
                 <p className="stat-card__hint">

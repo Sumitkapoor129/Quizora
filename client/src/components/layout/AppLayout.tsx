@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/Button';
 import { SessionExpiryBanner } from '@/components/layout/SessionExpiryBanner';
+import { NavIcon } from '@/components/visual/NavIcon';
 import { useAuth } from '@/hooks/useAuth';
 
 interface NavItem {
@@ -62,6 +63,24 @@ export default function AppLayout() {
     if (expired) el.setAttribute('inert', '');
     else el.removeAttribute('inert');
   }, [expired]);
+
+  useEffect(() => {
+    const content = contentRef.current;
+    const underlying = content?.querySelectorAll<HTMLElement>('.app-header, .app-main');
+    underlying?.forEach((element) => {
+      if (navOpen) element.setAttribute('inert', '');
+      else element.removeAttribute('inert');
+    });
+    return () => underlying?.forEach((element) => element.removeAttribute('inert'));
+  }, [navOpen]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const desktop = window.matchMedia('(min-width: 1025px)');
+    const closeOnDesktop = () => { if (desktop.matches) setNavOpen(false); };
+    desktop.addEventListener('change', closeOnDesktop);
+    return () => desktop.removeEventListener('change', closeOnDesktop);
+  }, []);
 
   useEffect(() => {
     if (!navOpen) return;
@@ -132,7 +151,9 @@ export default function AppLayout() {
           end={item.end}
           className={({ isActive }) => `nav-link${isActive ? ' nav-link--active' : ''}`}
         >
+          <NavIcon name={item.label} />
           {item.label}
+          <span className="nav-link__indicator" aria-hidden="true" />
         </NavLink>
       ))}
     </nav>
@@ -142,7 +163,7 @@ export default function AppLayout() {
     <div className="app-shell">
       {expired && <SessionExpiryBanner />}
       {expired && <div className="session-veil" aria-hidden="true" />}
-      <a className="skip-link" href="#main">
+      <a className="skip-link" href="#main" tabIndex={navOpen ? -1 : undefined} aria-hidden={navOpen ? true : undefined}>
         Skip to content
       </a>
       <div className="app-content" ref={contentRef}>
@@ -163,11 +184,12 @@ export default function AppLayout() {
 
           <Link to={home} className="brand-lockup" aria-label="Quizora home">
             <span className="brand-mark" aria-hidden="true">
-              EP
+              Q
             </span>
             <span className="brand-name">Quizora</span>
           </Link>
 
+          <span className="workspace-path">Workspace <span>/</span> {items.find((item) => item.end ? location.pathname === item.to : location.pathname.startsWith(item.to))?.label ?? "Overview"}</span>
           <div className="app-header__user">
             {user && (
               <span className="user-chip">
@@ -192,8 +214,14 @@ export default function AppLayout() {
             id={navId}
             className={`sidebar${navOpen ? ' sidebar--open' : ''}`}
             aria-label={navLabel}
+            role={navOpen ? "dialog" : undefined}
+            aria-modal={navOpen ? true : undefined}
           >
+            {navOpen && <button type="button" className="icon-btn sidebar__close" aria-label="Close navigation menu" onClick={() => setNavOpen(false)}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>}
+            <div className="sidebar__workspace"><span className="sidebar__workspace-icon" aria-hidden="true">{isAdmin ? 'A' : 'S'}</span><div><strong>{isAdmin ? 'Admin workspace' : 'My workspace'}</strong><span>{isAdmin ? 'Manage & inspire' : 'Learn at your pace'}</span></div></div>
+            <p className="sidebar__label">WORKSPACE</p>
             {nav}
+            <div className="sidebar__footer"><span className="sidebar__status" aria-hidden="true" /> Your next chapter starts here.</div>
           </aside>
           <main id="main" className="app-main" tabIndex={-1}>
             <div className="container">

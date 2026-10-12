@@ -1,6 +1,8 @@
 
 import 'dotenv/config';
 import { z } from 'zod';
+import { originListProblem, resolveEnvironmentProfile } from './environmentProfile.js';
+export { originListProblem, resolveEnvironmentProfile } from './environmentProfile.js';
 
 const isTest = process.env.NODE_ENV === 'test';
 
@@ -60,7 +62,7 @@ export function appOriginProblem(
   try {
     url = new URL(first);
   } catch {
-    return `[env] Invalid CLIENT_ORIGIN: "${first}".`;
+    return '[env] Invalid CLIENT_ORIGIN URL.';
   }
 
   if (!['http:', 'https:'].includes(url.protocol)) {
@@ -117,7 +119,7 @@ const envSchema = z.object({
 
   CLIENT_ORIGIN: z
     .string()
-    .default('http://localhost:5173')
+    .default('http://localhost:5173,http://127.0.0.1:5173')
     .transform((v) =>
       v
         .split(',')
@@ -129,6 +131,12 @@ const envSchema = z.object({
   PUBLIC_BACKEND_ORIGIN: z
     .string()
     .url()
+    .refine((raw) => {
+      const url = new URL(raw);
+      return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password &&
+        url.pathname === '/' && !url.search && !url.hash;
+    }, 'Must be a clean HTTP(S) origin.')
+    .transform((raw) => new URL(raw).origin)
     .optional(),
 
   GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
@@ -159,7 +167,7 @@ const envSchema = z.object({
 /**
  * Parse and validate environment variables.
  */
-const parsed = envSchema.safeParse(process.env);
+const parsed = envSchema.safeParse(resolveEnvironmentProfile(process.env));
 
 if (!parsed.success) {
   const bad = parsed.error.issues
@@ -175,6 +183,13 @@ if (!parsed.success) {
 
 // After process.exit() TypeScript knows parsing succeeded.
 const data = parsed.data;
+const invalidOrigins = originListProblem(data.CLIENT_ORIGIN, data.NODE_ENV === 'production');
+if (invalidOrigins) {
+  console.error(invalidOrigins);
+  process.exit(1);
+}
+// CORS and CSRF checks compare browser Origin headers, which are canonical origins.
+data.CLIENT_ORIGIN = data.CLIENT_ORIGIN.map((origin) => new URL(origin).origin);
 
 /**
  * Required configuration for non-test environments.
@@ -219,7 +234,8 @@ if (!isTest) {
  * Validate production-only requirements.
  *
  * Frontend and backend may have different origins.
- * The OAuth callback must point to the backend.
+ * The OAuth callback must use the frontend origin so browsers can keep the
+ * session cookie first-party. The frontend proxy forwards the callback.
  */
 export function productionProblems(
   d: ProductionConfig
@@ -267,14 +283,14 @@ export function productionProblems(
   }
 
   // Validate frontend origin.
-  const originProblem = appOriginProblem(d.CLIENT_ORIGIN);
+  const originProblem = appOriginProblem(d.CLIENT_ORIGIN) ?? originListProblem(d.CLIENT_ORIGIN, true);
 
   if (originProblem) {
     problems.push(originProblem);
   }
 
-  // Validate that the OAuth callback uses the backend,
-  // not the Vercel frontend.
+  // Validate the callback against an allowlisted frontend origin. Production
+  // browsers must see OAuth and API cookies on the same site.
   if (d.OAUTH_CALLBACK_URL && d.PUBLIC_BACKEND_ORIGIN) {
     try {
       const callback = new URL(d.OAUTH_CALLBACK_URL);
@@ -295,7 +311,7 @@ export function productionProblems(
 
       if (
         callback.protocol !== 'https:' ||
-        callback.origin !== backend.origin ||
+        !d.CLIENT_ORIGIN.some((origin) => new URL(origin).origin === callback.origin) ||
         callback.pathname !==
           '/api/auth/oauth/google/callback' ||
         callback.search ||
@@ -304,7 +320,7 @@ export function productionProblems(
         callback.password
       ) {
         problems.push(
-          '[env] OAUTH_CALLBACK_URL must use the backend HTTPS origin and /api/auth/oauth/google/callback path.'
+          '[env] OAUTH_CALLBACK_URL must use an allowlisted frontend HTTPS origin and /api/auth/oauth/google/callback path.'
         );
       }
     } catch {
