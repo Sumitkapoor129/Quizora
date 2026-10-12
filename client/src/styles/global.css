@@ -2171,8 +2171,8 @@ button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
 .auth-page--split { display: grid; grid-template-columns: 1.1fr 1fr; padding: 0; align-items: stretch; }
 .auth-hero { padding: 40px 56px 30px; display: flex; flex-direction: column; min-height: 100vh; background: #18151f; border-right: 1px solid #302a3b; overflow: hidden; }
 .auth-hero__body { margin: auto 0; padding-top: 40px; }
-.auth-hero h2 { font-size: clamp(32px, 3.4vw, 52px); font-weight: 550; letter-spacing: -.06em; line-height: 1.16; margin-bottom: 20px; max-width: 550px; }
-.auth-hero h2 span { color: var(--accent); }
+.auth-hero__title { font-size: clamp(32px, 3.4vw, 52px); font-weight: 550; letter-spacing: -.06em; line-height: 1.16; margin-bottom: 20px; max-width: 550px; }
+.auth-hero__title span { color: var(--accent); }
 .auth-hero__body > p:not(.page-eyebrow) { color: var(--ink-muted); line-height: 1.85; font-size: 14px; }
 .auth-hero__footer { font-size: 11px; color: var(--ink-faint); letter-spacing: .025em; }
 .auth-page--split .auth-column { align-self: center; justify-self: center; padding: 48px 32px; max-width: 440px; }

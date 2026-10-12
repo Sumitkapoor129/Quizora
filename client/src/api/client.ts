@@ -28,9 +28,10 @@ import type {
   ValidateImportResponse,
 } from '@/types';
 
-// OAuth must start directly on the API host, which owns its state cookie.
-// Choose by browser hostname so a production preview on localhost still
-// uses the local API. Outside a browser, retain Vite's development default.
+// Choose by browser hostname so local development and production previews on
+// localhost use the local API. Deployed hosts use same-origin Vercel rewrites
+// so OAuth state and session cookies remain first-party. Outside a browser,
+// retain Vite's development default.
 const hostname = typeof window === 'undefined' ? undefined : window.location.hostname;
 const isLocal = hostname === undefined
   ? import.meta.env.DEV

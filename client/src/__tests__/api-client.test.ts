@@ -18,10 +18,10 @@ async function expectApiOrigin(origin: string) {
 }
 
 describe('api base URL', () => {
-  it('uses the direct backend fallback on deployed hosts for OAuth state cookies', async () => {
+  it('uses the same-origin proxy on deployed hosts for first-party OAuth cookies', async () => {
     browserHost('quizora.example.test');
     vi.stubEnv('DEV', false);
-    await expectApiOrigin('https://quizora-ppfp.onrender.com');
+    await expectApiOrigin('');
   });
   it.each(['localhost', '127.0.0.1', '[::1]'])('uses the same loopback hostname for a production preview on %s', async (hostname) => {
     browserHost(hostname);
@@ -36,17 +36,17 @@ describe('api base URL', () => {
     vi.stubEnv('VITE_API_URL', 'https://legacy.example.test');
     await expectApiOrigin('http://localhost:4000');
   });
-  it('selects production on deployed hosts even with Vite dev mode', async () => {
+  it('keeps deployed requests same-origin even when Vite dev mode is enabled', async () => {
     browserHost('quizora.example.test');
     vi.stubEnv('DEV', true);
     vi.stubEnv('VITE_API_URL_DEV', 'http://localhost:4000');
     vi.stubEnv('VITE_API_URL_PROD', ' https://api.example.test/ ');
-    await expectApiOrigin('https://api.example.test');
+    await expectApiOrigin('');
   });
-  it('preserves the legacy fallback when the selected environment URL is blank', async () => {
+  it('keeps deployed requests same-origin when configured production URLs are blank', async () => {
     browserHost('quizora.example.test');
     vi.stubEnv('VITE_API_URL_PROD', '   ');
     vi.stubEnv('VITE_API_URL', ' https://legacy.example.test/// ');
-    await expectApiOrigin('https://legacy.example.test');
+    await expectApiOrigin('');
   });
 });

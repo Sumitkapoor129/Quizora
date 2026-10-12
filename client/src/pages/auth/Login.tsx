@@ -61,9 +61,9 @@ export default function Login() {
 
   return (
     <div className="auth-page auth-page--split">
-      <section className="auth-hero" aria-labelledby="auth-hero-title">
+      <section className="auth-hero" aria-label="About Quizora">
         <Link to="/" className="brand-lockup" aria-label="Quizora home"><span className="brand-mark" aria-hidden="true">Q</span><span className="brand-name">Quizora</span></Link>
-        <div className="auth-hero__body"><p className="page-eyebrow">A SPACE TO GROW</p><h2 id="auth-hero-title">Small steps.<br /><span>Extraordinary possibilities.</span></h2><p>Test your knowledge. Build your confidence.<br />Make your next chapter your best one yet.</p><OrbitGraphic /></div>
+        <div className="auth-hero__body"><p className="page-eyebrow">A SPACE TO GROW</p><p className="auth-hero__title">Small steps.<br /><span>Extraordinary possibilities.</span></p><p>Test your knowledge. Build your confidence.<br />Make your next chapter your best one yet.</p><OrbitGraphic /></div>
         <p className="auth-hero__footer">Focused learning. Meaningful progress.</p>
       </section>
       <div className="auth-column">

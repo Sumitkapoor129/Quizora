@@ -7,7 +7,7 @@ const validProd = {
   NODE_ENV: 'production',
   GOOGLE_OAUTH_CLIENT_ID: 'id',
   GOOGLE_OAUTH_CLIENT_SECRET: 'secret',
-  OAUTH_CALLBACK_URL: 'https://quizora-ppfp.onrender.com/api/auth/oauth/google/callback',
+  OAUTH_CALLBACK_URL: 'https://quizora-rho.vercel.app/api/auth/oauth/google/callback',
   PUBLIC_BACKEND_ORIGIN: 'https://quizora-ppfp.onrender.com',
   ADMIN_EMAILS: 'admin@example.com',
   COOKIE_SECURE: true,
@@ -113,10 +113,10 @@ describe('productionProblems', () => {
     expect(problems[0]).toContain('localhost');
   });
 
-  it('rejects a callback on the frontend instead of the backend', () => {
+  it('rejects a callback on the backend instead of the allowlisted frontend', () => {
     const problems = productionProblems({
       ...validProd,
-      OAUTH_CALLBACK_URL: 'https://quizora-rho.vercel.app/api/auth/oauth/google/callback'
+      OAUTH_CALLBACK_URL: 'https://quizora-ppfp.onrender.com/api/auth/oauth/google/callback'
     });
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('OAUTH_CALLBACK_URL');
