@@ -1,5 +1,6 @@
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { api } from '@/api/client';
+import { OrbitGraphic } from '@/components/visual/OrbitGraphic';
 import { Card } from '@/components/ui/Card';
 import { useAuth } from '@/hooks/useAuth';
 
@@ -59,16 +60,22 @@ export default function Login() {
   }
 
   return (
-    <div className="auth-page">
+    <div className="auth-page auth-page--split">
+      <section className="auth-hero" aria-label="About Quizora">
+        <Link to="/" className="brand-lockup" aria-label="Quizora home"><span className="brand-mark" aria-hidden="true">Q</span><span className="brand-name">Quizora</span></Link>
+        <div className="auth-hero__body"><p className="page-eyebrow">A SPACE TO GROW</p><p className="auth-hero__title">Small steps.<br /><span>Extraordinary possibilities.</span></p><p>Test your knowledge. Build your confidence.<br />Make your next chapter your best one yet.</p><OrbitGraphic /></div>
+        <p className="auth-hero__footer">Focused learning. Meaningful progress.</p>
+      </section>
       <div className="auth-column">
         <Link to="/" className="brand-lockup auth-brand" aria-label="Quizora home">
           <span className="brand-mark" aria-hidden="true">
-            EP
+            Q
           </span>
           <span className="brand-name">Quizora</span>
         </Link>
 
         <Card className="auth-card">
+          <p className="page-eyebrow">YOUR LEARNING WORKSPACE</p>
           <h1 className="auth-title">Sign in</h1>
           <p className="auth-sub">Use your Google account to continue.</p>
 
@@ -79,13 +86,15 @@ export default function Login() {
           )}
 
           <a
-            className="btn btn--primary btn--md btn--block"
+            className="btn btn--secondary btn--md btn--block google-sign-in"
             href={api.auth.googleStartUrl(next ?? undefined)}
           >
             {GOOGLE_G}
             Continue with Google
           </a>
+          <p className="auth-note">One account. A world of possibilities.</p>
         </Card>
+        <p className="auth-bottom-note">Designed for curious minds.</p>
       </div>
     </div>
   );

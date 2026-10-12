@@ -28,15 +28,21 @@ import type {
   ValidateImportResponse,
 } from '@/types';
 
-// In production the browser must reach the backend host directly, not the
-// Vercel /api proxy. The OAuth start sets a host-only `oauthState` cookie and
-// Google sends its callback to the backend host, so both hops must share that
-// host or state validation always fails. The server issues sameSite=None
-// cookies with credentialed CORS for this cross-site setup. VITE_API_URL, if
-// set at build time, overrides this.
+// Choose by browser hostname so local development and production previews on
+// localhost use the local API. Deployed hosts use same-origin Vercel rewrites
+// so OAuth state and session cookies remain first-party. Outside a browser,
+// retain Vite's development default.
+const hostname = typeof window === 'undefined' ? undefined : window.location.hostname;
+const isLocal = hostname === undefined
+  ? import.meta.env.DEV
+  : ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname);
+const cleanUrl = (value: string | undefined): string | undefined =>
+  value?.trim().replace(/\/+$/, '') || undefined;
+const localHost = hostname === '::1' || hostname === '[::1]' ? '[::1]' : hostname || 'localhost';
 const BASE_URL =
-  import.meta.env.VITE_API_URL ??
-  (import.meta.env.DEV ? 'http://localhost:3001' : 'https://quizora-ppfp.onrender.com');
+  (isLocal
+    ? cleanUrl(import.meta.env.VITE_API_URL_DEV) ?? cleanUrl(import.meta.env.VITE_API_URL) ?? `http://${localHost}:3001`
+    : '');
 
 /** Absolute URL for a relative asset path (e.g. `/uploads/x.png`). */
 export const assetUrl = (path?: string | null): string => (path ? `${BASE_URL}${path}` : '');
@@ -162,14 +168,9 @@ async function request<T>(path: string, init: RequestInit = {}, allowRefresh = t
 
 export const api = {
   auth: {
-    /**
-     * A navigation target, not a request: the browser goes straight to the
-     * backend host, which owns the OAuth handshake. This must NOT ride the
-     * Vercel /api rewrite — the proxy would set `oauthState` on the frontend
-     * host while Google sends the callback to the backend host.
-     */
+    /** Keep OAuth and API cookies on the app origin via the production proxy. */
     googleStartUrl: (next?: string) =>
-      `${BASE_URL}/api/auth/oauth/google${next ? `?next=${encodeURIComponent(next)}` : ''}`,
+      `${isLocal ? BASE_URL : ''}/api/auth/oauth/google${next ? `?next=${encodeURIComponent(next)}` : ''}`,
     logout: () => request<void>('/api/auth/logout', { method: 'POST' }, false),
     me: () => request<SessionResponse>('/api/auth/me').then(mapSession),
   },

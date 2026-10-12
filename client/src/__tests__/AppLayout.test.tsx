@@ -53,7 +53,7 @@ describe('AppLayout', () => {
 
     await user.click(hamburger);
     expect(hamburger).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('complementary', { name: 'Student navigation' })).toHaveClass('sidebar--open');
+    expect(screen.getByRole('dialog', { name: 'Student navigation' })).toHaveClass('sidebar--open');
 
     await user.keyboard('{Escape}');
     expect(hamburger).toHaveAttribute('aria-expanded', 'false');

@@ -42,12 +42,51 @@ cp .env.example .env   # then fill in MONGODB_URI and secrets
 | `PORT`                | no       | `3001`                | HTTP port                                |
 | `MONGODB_URI`         | yes*     | —                     | Atlas/real Mongo URI. *Not needed for tests |
 | `JWT_ACCESS_SECRET`   | yes*     | —                     | Long random value. *Not needed for tests |
-| `CLIENT_ORIGIN`       | no       | `http://localhost:5173` | Comma-separated allowed CORS origins / Origin check. **The first entry is the post-OAuth redirect target** — put the real app first in production (e.g. `https://quizora-rho.vercel.app,http://localhost:5173`) |
-| `COOKIE_SECURE`       | no       | `false`               | `true` in production (HTTPS only cookies)|
+| `CLIENT_ORIGIN_DEV` / `CLIENT_ORIGIN_PROD` | no / yes† | Localhost and 127.0.0.1 on port 5173 / — | Comma-separated frontend origins; first is the fallback post-login destination |
+| `PUBLIC_BACKEND_ORIGIN_DEV` / `PUBLIC_BACKEND_ORIGIN_PROD` | no / yes† | `http://localhost:3001` / — | Backend HTTP origin locally, clean HTTPS origin in production |
+| `OAUTH_CALLBACK_URL_DEV` / `OAUTH_CALLBACK_URL_PROD` | no / yes† | Local backend callback / — | Exact Google redirect URI; production uses the frontend origin and `/api/auth/oauth/google/callback` |
+| `COOKIE_SECURE_DEV` / `COOKIE_SECURE_PROD` | no | `false` / `true` | Production requires secure cookies |
 | `GOOGLE_OAUTH_CLIENT_ID`     | yes† | —                | Google Cloud OAuth client id. †Required in production |
 | `GOOGLE_OAUTH_CLIENT_SECRET` | yes† | —                | Google Cloud OAuth client secret. †Required in production |
-| `OAUTH_CALLBACK_URL`  | yes†     | —                     | Exact URL registered in Google Cloud. †Required in production |
 | `ADMIN_EMAILS`        | yes†     | `''`                  | Comma-separated emails that resolve to `ADMIN` on every sign-in. †Required in production — an empty list would demote every admin |
+
+### Local and production profiles
+
+Keep both sets of settings in `server/.env` as shown in `.env.example`. Select
+local settings with `NODE_ENV=development`, or production with `NODE_ENV=production`.
+Explicit `_DEV` or `_PROD` values override the legacy `CLIENT_ORIGIN`,
+`PUBLIC_BACKEND_ORIGIN`, `OAUTH_CALLBACK_URL`, and `COOKIE_SECURE` variables.
+Legacy deployment variables continue to work when a profile value is absent.
+Restart the server after changing environment variables. Never commit `.env`.
+
+For the frontend, copy `client/.env.example` to `client/.env`. Keep
+`VITE_API_URL_DEV=` blank to use the current loopback hostname on port 3001,
+and leave `VITE_API_URL_PROD` blank in production. The production app uses the
+Vercel same-origin `/api` and `/uploads` rewrites to the backend; this keeps
+session cookies first-party in browsers that block third-party cookies.
+The browser hostname selects the profile, so a production build previewed on
+localhost still calls the local backend. Explicit profile URLs take precedence
+over the legacy `VITE_API_URL` fallback. Vite embeds these public settings at
+build time: restart the dev server or rebuild after changing them.
+
+Locally run the client at `http://localhost:5173` and the backend at
+`http://localhost:3001`. The local allowlist also supports `127.0.0.1:5173`.
+The browser must use the same local hostname for frontend and backend so session
+cookies remain available. The client selects its local API hostname accordingly.
+OAuth remembers an allowlisted frontend Origin/Referer and returns there after
+login; without one it uses the first configured frontend origin.
+
+Register all callback URLs you use in Google Cloud's **Authorized redirect URIs**:
+
+- `http://localhost:3001/api/auth/oauth/google/callback`
+- `http://127.0.0.1:3001/api/auth/oauth/google/callback` (if using this alias)
+- `http://[::1]:3001/api/auth/oauth/google/callback` (if using IPv6 loopback)
+- `https://quizora-techteam.vercel.app/api/auth/oauth/google/callback`
+
+Set production `OAUTH_CALLBACK_URL` to that Vercel URL and register it in Google
+Cloud. Vercel forwards the OAuth callback to Render, while the browser sees the
+Vercel origin for both OAuth and API requests. Production retains HTTPS validation
+and an explicit frontend allowlist; arbitrary request hostnames never become callbacks.
 
 ## API
 

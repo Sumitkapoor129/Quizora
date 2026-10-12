@@ -33,17 +33,17 @@ export interface GoogleProfile {
   email_verified?: boolean;
 }
 
-export function buildAuthUrl(opts: { state: string }): string {
+export function buildAuthUrl(opts: { state: string; redirectUri?: string }): string {
   const url = new URL(AUTH_URL);
   url.searchParams.set('client_id', env.GOOGLE_OAUTH_CLIENT_ID);
-  url.searchParams.set('redirect_uri', env.OAUTH_CALLBACK_URL);
+  url.searchParams.set('redirect_uri', opts.redirectUri ?? env.OAUTH_CALLBACK_URL);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('scope', 'openid email profile');
   url.searchParams.set('state', opts.state);
   return url.toString();
 }
 
-export async function exchangeCode(code: string): Promise<string> {
+export async function exchangeCode(code: string, redirectUri = env.OAUTH_CALLBACK_URL): Promise<string> {
   const body = (await googleJson('google_token_exchange_failed', TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -52,7 +52,7 @@ export async function exchangeCode(code: string): Promise<string> {
       code,
       client_id: env.GOOGLE_OAUTH_CLIENT_ID,
       client_secret: env.GOOGLE_OAUTH_CLIENT_SECRET,
-      redirect_uri: env.OAUTH_CALLBACK_URL
+      redirect_uri: redirectUri
     })
   })) as { access_token?: string };
   if (!body.access_token) throw new Error('google_token_exchange_failed:no_access_token');

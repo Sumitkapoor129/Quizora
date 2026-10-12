@@ -1,25 +1,31 @@
 :root {
+  color-scheme: dark;
+  --surface-2: #202128;
+  --primary: #ac93f5;
+  --danger-tint: #302024;
+  --success-tint: #1c2c26;
+  --warn-tint: #302a1e;
   /* Surfaces */
-  --paper: #fafaf9;
-  --surface: #ffffff;
+  --paper: #101114;
+  --surface: #191a20;
 
   /* Ink */
-  --ink: #1a1d21;
-  --ink-muted: #5c6470;
-  --ink-faint: #8a919c;
+  --ink: #f0f0f4;
+  --ink-muted: #a9aab8;
+  --ink-faint: #858693;
 
   /* Lines */
-  --line: #e4e7eb;
+  --line: #2b2c35;
 
   /* Accent */
-  --accent: #2b5bd7;
-  --accent-hover: #2147a8;
-  --accent-tint: #edf2fd;
+  --accent: #c0adff;
+  --accent-hover: #d2c4ff;
+  --accent-tint: #292338;
 
   /* Status */
-  --danger: #c0392b;
-  --warn: #8a5a10;
-  --success: #2f7d4f;
+  --danger: #ff9d9d;
+  --warn: #e5be79;
+  --success: #8dd5b2;
 
   /* Type scale */
   --text-xs: 12px;
