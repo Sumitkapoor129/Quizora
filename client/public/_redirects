@@ -1,0 +1,4 @@
+
+/api/*       https://quizora-ppfp.onrender.com/api/:splat       200
+/uploads/*   https://quizora-ppfp.onrender.com/uploads/:splat   200
+/*           /index.html                                       200
